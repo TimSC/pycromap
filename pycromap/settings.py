@@ -49,6 +49,7 @@ INSTALLED_APPS = [
 	"django.contrib.messages",
 	"django.contrib.staticfiles",
 	"mapdata",
+	"summaries",
 	"tiles",
 ]
 
@@ -81,6 +82,10 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "pycromap.wsgi.application"
 
+# Seconds each part of rendering a tile may take: each query of the map
+# database, and tilemaker
+RENDER_TIMEOUT = int(env("RENDER_TIMEOUT", "600"))
+
 # pycromap's own database: the state of tile rendering, and summaries. SQLite
 # for now. WAL lets the web server read while the renderer writes, and
 # immediate transactions take the write lock up front, so two writers wait
@@ -99,6 +104,9 @@ DATABASES = {
 			"transaction_mode": "IMMEDIATE",
 			"init_command": "PRAGMA journal_mode=WAL;",
 		},
+		# A file, as tests render in threads: an in-memory database's shared
+		# cache fails at once on a locked table, rather than waiting
+		"TEST": {"NAME": str(BASE_DIR / "test_db.sqlite3")},
 	},
 	"pycrocosm": {
 		"ENGINE": "django.db.backends.postgresql",
@@ -111,7 +119,7 @@ DATABASES = {
 			# psycopg2's ISOLATION_LEVEL_REPEATABLE_READ
 			"isolation_level": 2,
 			# Milliseconds a statement may take
-			"options": "-c statement_timeout=60000",
+			"options": "-c statement_timeout={}".format(RENDER_TIMEOUT * 1000),
 		},
 	},
 }
@@ -147,39 +155,98 @@ PYCROCOSM_MODIFY_PREFIX = env("PYCROCOSM_MODIFY_PREFIX", "pycrocosm_mod_")
 # tilemaker-core, built in the submodule (see README.md)
 TILEMAKER = {
 	"program": env("TILEMAKER_PROGRAM", str(BASE_DIR / "tilemaker" / "build" / "tilemaker")),
-	"config": env("TILEMAKER_CONFIG", str(BASE_DIR / "tilemaker" / "config.json")),
-	"process": env("TILEMAKER_PROCESS", str(BASE_DIR / "tilemaker" / "process.lua")),
+	# The profile: pycromap's working copy of tilemaker's OpenMapTiles one
+	"config": env("TILEMAKER_CONFIG", str(BASE_DIR / "profile" / "config.json")),
+	"process": env("TILEMAKER_PROCESS", str(BASE_DIR / "profile" / "process.lua")),
 	# tilemaker runs here, which is where the config's shapefile paths
 	# (coastline/, landcover/) are relative to
 	"directory": env("TILEMAKER_DIRECTORY", str(BASE_DIR / "tilemaker")),
 	# The format the map data is given to tilemaker in: "o5m" or "pbf"
 	"input_format": env("TILEMAKER_INPUT_FORMAT", "o5m"),
 	# Seconds a tile may take
-	"timeout": 60,
+	"timeout": RENDER_TIMEOUT,
 }
 
 # How each zoom is made. Each zoom served has an entry:
 #   "source": "data" - rendered from the map data of the tile's area
+#             "summary" - rendered from the summaries beneath the tile at
+#             "level" (a level of SUMMARY_LEVELS, no lower than the zoom),
+#             merged
+#             "crop" - cut from the tile covering it at zoom "from" (a lower
+#             zoom served), scaled up: quick, with that tile's content
 #   "cache": whether rendered tiles are kept and served as static files, or
-#            rendered afresh for every request
-# Zooms without an entry are not served.
+#            rendered afresh for every request (not for "crop", never kept)
+#   "max_age": for a cached zoom, seconds after which a tile is rendered
+#              again when asked for (none: kept until it is gone)
+# Zooms without an entry are not served. The highest zoom rendered from the
+# data should have everything the zooms cut from it show: the profile gives
+# z12 the content of upstream's z14 (see profile/process.lua).
 TILE_ZOOMS = {
-	13: {"source": "data", "cache": False},
+	14: {"source": "crop", "from": 12},
+	13: {"source": "crop", "from": 12},
+	12: {"source": "data", "cache": True, "max_age": 3600},
+	11: {"source": "summary", "level": 12, "cache": False},
+	10: {"source": "summary", "level": 10, "cache": False},
+	9: {"source": "summary", "level": 10, "cache": False},
+	8: {"source": "summary", "level": 8, "cache": False},
+	7: {"source": "summary", "level": 8, "cache": False},
+	6: {"source": "summary", "level": 6, "cache": False},
 }
+
+# ---- Summaries
+
+# The levels of the summary pyramid. The finest is built from the map data,
+# when its tiles are rendered (or when a summary is needed and missing); each
+# other from the 16 (or 4, ...) summaries of the next finer level beneath it.
+SUMMARY_LEVELS = [12, 10, 8, 6]
+
+# What summaries keep, at each level
+SUMMARY_LUA = Path(env("SUMMARY_LUA", str(BASE_DIR / "summaries" / "summary.lua")))
+
+# How far simplified geometry may stray, in pixels of a 4096-pixel tile at the
+# summary's level: 16 is about a pixel on screen. Changing it makes stored
+# summaries out of date.
+SUMMARY_SIMPLIFY_PIXELS = float(env("SUMMARY_SIMPLIFY_PIXELS", "16"))
+
+# How deep jobs for summaries may go: a tile's request makes jobs for the
+# summaries it needs at depth 1; those may make jobs for the summaries beneath
+# them at depth 2, and so on, up to this. A tile whose summaries can't be
+# built within it is a placeholder (see README.md).
+SUMMARY_MAX_DEPTH = int(env("SUMMARY_MAX_DEPTH", "1"))
+
+# A job waiting for summaries is looked at again after SUMMARY_WAIT seconds at
+# first, then after a quarter of the time it has waited so far, up to
+# SUMMARY_WAIT_MAX; it fails once it has waited SUMMARY_WAIT_LIMIT
+SUMMARY_WAIT = 1
+SUMMARY_WAIT_MAX = 60
+SUMMARY_WAIT_LIMIT = int(env("SUMMARY_WAIT_LIMIT", "1800"))
 
 # Where cached tiles are written, and the URL they are served from (by Django
 # when DEBUG is on; in production, by the web server)
 TILE_CACHE_DIR = Path(env("TILE_CACHE_DIR", str(BASE_DIR / "tilecache")))
 TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 
-# Seconds a tile request waits for the renderer before giving up
-TILE_REQUEST_WAIT = 20
+# Seconds a tile request waits for the renderer before giving up. The web
+# server must let a request run this long (see WEB_TIMEOUT in
+# docker-compose.yml).
+TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
 # Rendering threads in each render_tiles process
-RENDER_WORKERS = int(env("RENDER_WORKERS", "2"))
+RENDER_WORKERS = int(env("RENDER_WORKERS", "16"))
+# Whether idle renderers work ahead: on summaries, and tiles of cached zooms,
+# that nobody has asked for yet, highest zooms first, then nearest the
+# IDLE_SEEDS most recently requested tiles, within IDLE_RADIUS tiles of them
+# (see tiles/idle.py). With nothing to do, they look again after IDLE_POLL
+# seconds.
+RENDER_IDLE_WORK = env("RENDER_IDLE_WORK", "false").lower() in ("1", "true", "yes")
+IDLE_RADIUS = int(env("IDLE_RADIUS", "4"))
+IDLE_SEEDS = int(env("IDLE_SEEDS", "200"))
+IDLE_POLL = 10
+
 # Seconds after which a tile claimed by a renderer that has gone quiet is
-# given to another
-RENDER_LEASE = 120
+# given to another: longer than reading the map data and running tilemaker
+# can both take
+RENDER_LEASE = 2 * RENDER_TIMEOUT + 60
 # Renders tried before a tile is marked as failed
 RENDER_ATTEMPTS = 3
 

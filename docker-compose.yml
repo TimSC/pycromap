@@ -15,7 +15,10 @@
 # pyo5m is built from pycrocosm's extractupdate/pyo5m, beside this project,
 # unless PYO5M_SOURCE says where it is.
 #
-# The web server is Django's development server, for now.
+# The web server is gunicorn, with WEB_WORKERS processes (16). Each handles one
+# request at a time, and a tile request waits up to TILE_REQUEST_WAIT seconds
+# (600) for the renderer, so WEB_TIMEOUT (660) must be longer. Static files
+# and cached tiles are served by Django while DJANGO_DEBUG is on (the default).
 
 x-pycromap: &pycromap
   image: pycromap
@@ -36,6 +39,13 @@ x-pycromap: &pycromap
     PYCROCOSM_MODIFY_PREFIX: ${PYCROCOSM_MODIFY_PREFIX:-pycrocosm_mod_}
     MAP_INITIAL_BBOX: ${MAP_INITIAL_BBOX:--1.095,50.795,-1.085,50.8}
     DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+    TILE_REQUEST_WAIT: ${TILE_REQUEST_WAIT:-600}
+    RENDER_TIMEOUT: ${RENDER_TIMEOUT:-600}
+    SUMMARY_MAX_DEPTH: ${SUMMARY_MAX_DEPTH:-1}
+    # Whether idle renderers work ahead (see README.md)
+    RENDER_IDLE_WORK: ${RENDER_IDLE_WORK:-false}
+    IDLE_RADIUS: ${IDLE_RADIUS:-4}
+    IDLE_SEEDS: ${IDLE_SEEDS:-200}
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
@@ -52,7 +62,9 @@ services:
 
   web:
     <<: *pycromap
-    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    command: ["gunicorn", "pycromap.wsgi", "--bind", "0.0.0.0:8000",
+              "--workers", "${WEB_WORKERS:-16}", "--timeout", "${WEB_TIMEOUT:-660}",
+              "--access-logfile", "-"]
     ports:
       - "${PYCROMAP_PORT:-8082}:8000"
     depends_on:
@@ -61,7 +73,7 @@ services:
 
   renderer:
     <<: *pycromap
-    command: ["python", "manage.py", "render_tiles", "--workers", "${RENDER_WORKERS:-2}"]
+    command: ["python", "manage.py", "render_tiles", "--workers", "${RENDER_WORKERS:-16}"]
     depends_on:
       migrate:
         condition: service_completed_successfully

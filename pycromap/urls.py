@@ -1,7 +1,9 @@
 from django.conf import settings
 from django.contrib import admin
+from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 from django.urls import include, path, re_path
-from django.views.static import serve
+
+from tiles.views import cached_tile
 
 urlpatterns = [
 	path("admin/", admin.site.urls),
@@ -9,6 +11,8 @@ urlpatterns = [
 ]
 
 if settings.DEBUG:
-	# Cached tiles; in production the web server serves TILE_CACHE_DIR
+	# Static files, when not under runserver (which serves them itself), and
+	# cached tiles; in production the web server serves both
+	urlpatterns += staticfiles_urlpatterns()
 	urlpatterns.append(re_path(r"^{}(?P<path>.*)$".format(settings.TILE_CACHE_URL.lstrip("/")),
-		serve, {"document_root": settings.TILE_CACHE_DIR}))
+		cached_tile))

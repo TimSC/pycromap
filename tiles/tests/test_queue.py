@@ -50,18 +50,31 @@ class QueueTests(TestCase):
 		tile = TileState.objects.get()
 		self.assertEqual((tile.status, tile.error), (TileState.FAILED, "boom again"))
 
-	def test_finish_writes_a_file_per_version(self):
+	def test_cached_tile_is_a_file_per_version(self):
 		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
 			queue.request_tile(13, 1, 2, rerender=True)
-			queue.finish(queue.claim_next("a"), b"tile", 7, 0.5)
+			queue.finish(queue.claim_next("a"), b"tile", 7, 0.5, cached=True)
 			tile = TileState.objects.get()
-			self.assertEqual((tile.status, tile.data_version, tile.file), (TileState.DONE, 7, "13/1/2.7.pbf"))
+			self.assertEqual((tile.status, tile.data_version, tile.file, tile.data), (TileState.DONE, 7, "13/1/2.7.pbf.gz", None))
 			self.assertEqual((Path(cache) / tile.file).read_bytes(), b"tile")
+			# A newer version replaces the file
+			queue.request_tile(13, 1, 2, rerender=True)
+			queue.finish(queue.claim_next("a"), b"newer", 8, 0.5, cached=True)
+			self.assertEqual(sorted(p.name for p in (Path(cache) / "13/1").iterdir()), ["2.8.pbf.gz"])
 
-	def test_finish_of_an_empty_tile_has_no_file(self):
+	def test_uncached_tile_is_kept_with_its_state(self):
+		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
+			queue.request_tile(13, 1, 2, rerender=True)
+			queue.finish(queue.claim_next("a"), b"tile", 7, 0.5, cached=False)
+			tile = TileState.objects.get()
+			self.assertEqual((tile.file, bytes(tile.data)), ("", b"tile"))
+			self.assertEqual(list(Path(cache).iterdir()), [])
+
+	def test_empty_tile_has_neither(self):
 		queue.request_tile(13, 1, 2, rerender=True)
-		queue.finish(queue.claim_next("a"), b"", 7, 0.5)
-		self.assertEqual(TileState.objects.get().file, "")
+		queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=True)
+		tile = TileState.objects.get()
+		self.assertEqual((tile.file, tile.data), ("", None))
 
 	@override_settings(RENDER_LEASE=60)
 	def test_abandoned_claims_are_requeued(self):

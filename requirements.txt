@@ -1,5 +1,12 @@
 # The web application, the renderer and the admin
 django==6.1.2
+# The web server in docker-compose.yml
+gunicorn==26.2.0
+# Summaries: running summary.lua, and simplifying geometry
+lupa==2.8
+shapely==2.2.0
+# Cutting tiles from a lower zoom's
+mapbox-vector-tile==2.2.0
 # Reading the pycrocosm map database
 psycopg2-binary==2.9.13
 # Writing map data as o5m or PBF for tilemaker-core. Not on PyPI: install it

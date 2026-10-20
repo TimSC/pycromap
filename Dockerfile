@@ -39,10 +39,11 @@ COPY --from=pyo5m . /src/pyo5m
 RUN pip install --no-cache-dir -r requirements.txt /src/pyo5m
 
 COPY --from=tilemaker /src/tilemaker/build/tilemaker tilemaker/build/tilemaker
-COPY tilemaker/config.json tilemaker/process.lua tilemaker/
+COPY profile ./profile
 COPY manage.py ./
 COPY pycromap ./pycromap
 COPY mapdata ./mapdata
+COPY summaries ./summaries
 COPY tiles ./tiles
 
 # The database and tile cache live in /data, a volume shared by the web

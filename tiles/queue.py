@@ -1,7 +1,9 @@
 """The render queue, kept in TileState rows.
 
 Requests queue tiles; renderers (manage.py render_tiles) claim them, highest
-priority first, and record the results. A claim is a compare-and-set update,
+priority first, and record the results. Jobs that need summaries which don't
+exist yet queue jobs to build them, ahead of themselves, and step back until
+they are built. A claim is a compare-and-set update,
 so any number of renderers can share the queue, even on SQLite.
 """
 
@@ -11,7 +13,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from .models import TileState
@@ -23,10 +25,10 @@ def zoom_config(zoom):
 
 
 def tile_file(zoom, x, y, version):
-	"""Where a rendering of a tile goes, relative to TILE_CACHE_DIR. The data
-	version is in the name, so a newer rendering never changes a file that
-	is being served."""
-	return os.path.join(str(zoom), str(x), "{}.{}.pbf".format(y, version))
+	"""Where a cached zoom's rendering of a tile goes, relative to
+	TILE_CACHE_DIR: a gzipped vector tile. The data version is in the name, so
+	a newer rendering never changes a file that is being served."""
+	return os.path.join(str(zoom), str(x), "{}.{}.pbf.gz".format(y, version))
 
 
 def request_tile(zoom, x, y, rerender):
@@ -37,11 +39,12 @@ def request_tile(zoom, x, y, rerender):
 	now = timezone.now()
 	with transaction.atomic():
 		# A new tile has no rendering, so it is queued below
-		tile, _ = TileState.objects.get_or_create(zoom=zoom, x=x, y=y,
+		tile, _ = TileState.objects.get_or_create(kind=TileState.TILE, zoom=zoom, x=x, y=y,
 			defaults={"status": TileState.DONE})
 		tile.requested_at = now
 		tile.request_count = F("request_count") + 1
 		queued_at = None
+		tile.idle = False
 		if tile.status in (TileState.QUEUED, TileState.RENDERING) and tile.queued_at:
 			# Already on its way: wait for that rendering
 			queued_at = tile.queued_at
@@ -50,6 +53,7 @@ def request_tile(zoom, x, y, rerender):
 			tile.status = TileState.QUEUED
 			tile.priority = time.time()
 			tile.queued_at = queued_at = now
+			tile.not_before = tile.waiting_since = None
 			tile.attempts = 0
 			tile.error = ""
 		tile.save()
@@ -57,14 +61,23 @@ def request_tile(zoom, x, y, rerender):
 	return tile, queued_at
 
 
+def log_request(zoom, x, y):
+	"""Records a request for a tile without queueing it."""
+	with transaction.atomic():
+		tile, _ = TileState.objects.get_or_create(kind=TileState.TILE, zoom=zoom, x=x, y=y,
+			defaults={"status": TileState.DONE})
+		TileState.objects.filter(pk=tile.pk).update(requested_at=timezone.now(),
+			request_count=F("request_count") + 1)
+
+
 def wait_for_tile(tile_id, queued_at, timeout):
 	"""Waits until the tile has been rendered since queued_at. Returns its
 	state, or None if it wasn't ready in time."""
 	deadline = time.monotonic() + timeout
 	while True:
-		tile = TileState.objects.get(pk=tile_id)
+		tile = TileState.objects.defer("data").get(pk=tile_id)
 		if tile.status == TileState.DONE and tile.rendered_at and tile.rendered_at >= queued_at:
-			return tile
+			return TileState.objects.get(pk=tile_id)
 		if tile.status == TileState.FAILED or time.monotonic() >= deadline:
 			return None
 		time.sleep(0.05)
@@ -77,12 +90,17 @@ def requeue_abandoned():
 		status=TileState.QUEUED, claimed_by="", claimed_at=None)
 
 
-def claim_next(worker):
-	"""Claims the highest priority queued tile for a renderer, or returns None
-	if there is none."""
+def claim_next(worker, idle=True):
+	"""Claims the highest priority queued job for a renderer, or returns None
+	if there is none. Without idle, jobs queued by idle renderers are left: a
+	renderer not working ahead leaves them to wait, until a request takes one
+	over."""
 	while True:
-		candidate = (TileState.objects.filter(status=TileState.QUEUED)
-			.order_by("-priority", "queued_at").values_list("pk", flat=True).first())
+		ready = Q(not_before__isnull=True) | Q(not_before__lte=timezone.now())
+		jobs = TileState.objects.filter(ready, status=TileState.QUEUED)
+		if not idle:
+			jobs = jobs.filter(idle=False)
+		candidate = jobs.order_by("-priority", "queued_at").values_list("pk", flat=True).first()
 		if candidate is None:
 			return None
 		claimed = TileState.objects.filter(pk=candidate, status=TileState.QUEUED).update(
@@ -93,25 +111,88 @@ def claim_next(worker):
 		# Another renderer got it first; try the next
 
 
-def finish(tile, data, version, seconds):
-	"""Records a rendering, writing the tile to TILE_CACHE_DIR."""
-	path = ""
-	if data:
-		path = tile_file(tile.zoom, tile.x, tile.y, version)
-		full = os.path.join(settings.TILE_CACHE_DIR, path)
+def finish(tile, data, version, seconds, cached):
+	"""Records a rendering of a tile (gzipped). A cached zoom's tile is written
+	to TILE_CACHE_DIR, replacing its last file; any other's is kept with its
+	state, for the requests waiting for it."""
+	fields = {"status": TileState.DONE, "rendered_at": timezone.now(), "data_version": version,
+		"render_seconds": seconds, "error": "", "claimed_by": "", "claimed_at": None,
+		"not_before": None, "waiting_since": None, "file": "", "data": None}
+	previous = TileState.objects.filter(pk=tile.pk).values_list("file", flat=True).first()
+	if data and cached:
+		fields["file"] = tile_file(tile.zoom, tile.x, tile.y, version)
+		full = os.path.join(settings.TILE_CACHE_DIR, fields["file"])
 		os.makedirs(os.path.dirname(full), exist_ok=True)
 		temporary = full + ".tmp{}".format(os.getpid())
 		with open(temporary, "wb") as f:
 			f.write(data)
 		os.replace(temporary, full)
-	TileState.objects.filter(pk=tile.pk).update(status=TileState.DONE, rendered_at=timezone.now(),
-		data_version=version, render_seconds=seconds, file=path, error="", claimed_by="", claimed_at=None)
+	elif data:
+		fields["data"] = data
+	TileState.objects.filter(pk=tile.pk).update(**fields)
+	if previous and previous != fields["file"]:
+		try:
+			os.remove(os.path.join(settings.TILE_CACHE_DIR, previous))
+		except FileNotFoundError:
+			pass
 
 
-def fail(tile, error):
-	"""Records a failed rendering: the tile is queued again, until it has
-	failed RENDER_ATTEMPTS times."""
+def fail(tile, error, final=False):
+	"""Records a failed job: it is queued again, until it has failed
+	RENDER_ATTEMPTS times, or straight away if final."""
 	tile.refresh_from_db()
-	status = TileState.FAILED if tile.attempts >= settings.RENDER_ATTEMPTS else TileState.QUEUED
+	status = TileState.FAILED if final or tile.attempts >= settings.RENDER_ATTEMPTS else TileState.QUEUED
 	TileState.objects.filter(pk=tile.pk).update(status=status, error=str(error)[:2000],
-		claimed_by="", claimed_at=None)
+		claimed_by="", claimed_at=None, not_before=None, waiting_since=None)
+
+
+def finish_summary(job, version, seconds):
+	"""Records a built summary (stored as a TileSummary)."""
+	TileState.objects.filter(pk=job.pk).update(status=TileState.DONE, rendered_at=timezone.now(),
+		data_version=version, render_seconds=seconds, error="", claimed_by="", claimed_at=None,
+		not_before=None, waiting_since=None)
+
+
+def queue_summaries(tiles, priority, depth):
+	"""Queues jobs to build summaries, (level, x, y), ahead of priority, at a
+	depth. A request at a lower depth than a job already queued supersedes it:
+	the job takes the lower depth (and the higher priority). Returns the
+	summaries whose jobs have failed, except those that failed only for being
+	too deep, which the lower depth retries."""
+	now = timezone.now()
+	failed = []
+	for level, x, y in tiles:
+		with transaction.atomic():
+			job, created = TileState.objects.get_or_create(kind=TileState.SUMMARY, zoom=level, x=x, y=y,
+				defaults={"status": TileState.DONE, "depth": depth})
+			deeper = not created and depth < job.depth
+			if job.status == TileState.FAILED and not deeper:
+				failed.append((level, x, y))
+				continue
+			if job.status in (TileState.QUEUED, TileState.RENDERING):
+				TileState.objects.filter(pk=job.pk).update(priority=max(priority, job.priority),
+					depth=min(depth, job.depth), idle=False)
+				continue
+			TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED, priority=priority,
+				depth=depth, idle=False, queued_at=now, not_before=None, waiting_since=None, attempts=0, error="")
+	return failed
+
+
+class WaitedTooLong(Exception):
+	pass
+
+
+def defer(job):
+	"""Puts a claimed job back, not to be claimed again for a while: it is
+	waiting for summaries. Waiting isn't an attempt. The longer it has waited,
+	the longer until it looks again (from SUMMARY_WAIT, a quarter of the time
+	waited so far, up to SUMMARY_WAIT_MAX). Raises WaitedTooLong once it has
+	waited SUMMARY_WAIT_LIMIT."""
+	now = timezone.now()
+	since = job.waiting_since or now
+	waited = (now - since).total_seconds()
+	if waited > settings.SUMMARY_WAIT_LIMIT:
+		raise WaitedTooLong("waited {:.0f} seconds for summaries".format(waited))
+	delay = min(settings.SUMMARY_WAIT_MAX, max(settings.SUMMARY_WAIT, waited / 4))
+	TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED, claimed_by="", claimed_at=None,
+		waiting_since=since, not_before=now + timedelta(seconds=delay), attempts=F("attempts") - 1)

@@ -48,7 +48,8 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		    style: style,
 		    center: [(Number(bounds[0])+Number(bounds[2]))/2,
 			         (Number(bounds[1])+Number(bounds[3]))/2], // starting position [lng, lat]
-		    zoom: 13 // starting zoom
+		    zoom: 13, // starting zoom
+		    maxZoom: Number(data['maxzoom']) // the highest zoom served
 		});
 		map.addControl(new mapboxgl.NavigationControl());
 		map.addControl(new mapboxgl.AttributionControl({ compact: false, customAttribution:

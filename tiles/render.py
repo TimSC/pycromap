@@ -5,7 +5,6 @@ import logging
 import os
 import subprocess
 import tempfile
-import time
 
 import pyo5m
 from django.conf import settings
@@ -47,22 +46,19 @@ def run_tilemaker(input_path, zoom, x, y, output_dir):
 		return f.read()
 
 
-def render_tile(zoom, x, y):
-	"""Renders a tile from the map database. Returns the tile, as an
-	uncompressed vector tile (b"" if there was nothing to draw), and the
-	version of the map data it is from."""
-	started = time.monotonic()
-	data, version = read_area(*tile_area(zoom, x, y))
-	read = time.monotonic()
+def read_tile_data(zoom, x, y):
+	"""The map data of a tile's area, and the version of the map data."""
+	return read_area(*tile_area(zoom, x, y))
 
+
+def render_data(data, zoom, x, y):
+	"""Renders a tile from map data (a pyo5m OsmData). Returns it as a gzipped
+	vector tile, or b"" if there was nothing to draw."""
 	with tempfile.TemporaryDirectory(prefix="pycromap-") as work:
 		input_path = os.path.join(work, "area." + settings.TILEMAKER["input_format"])
 		pyo5m.save(data, input_path)
 		tile = run_tilemaker(input_path, zoom, x, y, os.path.join(work, "tiles"))
-
-	# Kept uncompressed, so that a static file server can serve it as it is
-	if tile[:2] == b"\x1f\x8b":
-		tile = gzip.decompress(tile)
-	logger.info("Rendered %s/%s/%s: %d bytes, version %s (read %.2fs, render %.2fs)",
-		zoom, x, y, len(tile), version, read - started, time.monotonic() - read)
-	return tile, version
+	# Gzipped, whatever tilemaker's config says, as tiles are kept and sent
+	if tile and tile[:2] != b"\x1f\x8b":
+		tile = gzip.compress(tile)
+	return tile

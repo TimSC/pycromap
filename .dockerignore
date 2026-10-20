@@ -1,6 +1,7 @@
 .git
 .env
 db.sqlite3*
+test_db.sqlite3*
 tilecache/
 staticfiles/
 venv/

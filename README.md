@@ -9,7 +9,38 @@ A map tile server for a [pycrocosm](https://github.com/TimSC/pycrocosm) map data
 3. A renderer, `manage.py render_tiles`, claims queued tiles, highest priority first. For each, it reads the map data of the tile's area from the pycrocosm database (`mapdata/`), writes it as o5m (or PBF), and runs tilemaker-core with `--tile`.
 4. The tile is written to `TILE_CACHE_DIR`, named with the version of the map data it came from (the newest `edit_activity` ID), and the request is answered: a redirect to the file for a cached zoom, the tile itself otherwise, or 204 if there was nothing to draw.
 
-`TILE_ZOOMS` in the settings says how each zoom is made. For now only z13 is served, rendered afresh for every request.
+`TILE_ZOOMS` in the settings says how each zoom is made:
+
+| Zoom | Made from | Kept |
+|------|-----------|------|
+| 14, 13 | cut from the z12 tile covering it, scaled up | no |
+| 12 | the map data | as a file, rendered again when asked for after an hour (`max_age`) |
+| 11 | the level-12 summaries beneath it | no |
+| 10, 9 | the level-10 summaries | no |
+| 8, 7 | the level-8 summaries | no |
+| 6 | the level-6 summary | no |
+
+z12 is the highest zoom rendered: the profile gives it everything upstream's profile draws up to z14, so z13 and z14 need no rendering of their own. Cutting a tile from a lower zoom's (`"source": "crop"`) decodes it, scales the part covered up, clips it a little beyond the edge, and encodes it again: quick, without the map data, but no more precise than the tile it came from. The tile it comes from is obtained as a request for it would be.
+
+### The profile
+
+[profile/](profile/) is pycromap's copy of tilemaker's OpenMapTiles profile (`config.json` and `process.lua`), to change as pycromap needs; `TILEMAKER_CONFIG` and `TILEMAKER_PROCESS` point elsewhere. It differs from upstream in drawing at z12 what upstream draws only at z13 and z14 (`TOP_ZOOM` in `process.lua`, and the layers' `minzoom` and `simplify_below` in `config.json`), and in its `maxzoom` of 12.
+
+### Working ahead
+
+With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest a requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. One worker in each renderer plans, keeping as many jobs queued as there are workers, below every request. A request for something queued ahead takes the job over. With it off, renderers leave jobs queued ahead alone.
+
+### Summaries
+
+A tile's summary keeps the objects of its area worth drawing at lower zooms, picked by [summaries/summary.lua](summaries/summary.lua), whole, with their geometry simplified. Summaries form a pyramid (`SUMMARY_LEVELS`, 12, 10, 8 and 6). A level-12 summary is built from the map data whenever its z12 tile is rendered, or on its own if one is needed; each coarser level is built from the 16 summaries beneath it, merged (keeping the newest copy of objects found in several), filtered again and simplified more. A tile rendered from summaries merges those beneath it at its zoom's level: z11 the four level-12 summaries, z10 its level-10 summary, z9 the four level-10 summaries beneath it.
+
+Summaries are stored in pycromap's database (`TileSummary`), with the version of the map data they were built from, their format, and a recipe: a hash of `summary.lua` and the settings that shape summaries. Change either, and existing summaries are out of date and built again when needed.
+
+Only work that can be done soon is queued. Jobs have a depth: a tile's is 0, the jobs for the summaries it needs are 1, the jobs for the summaries beneath those 2, and so on, up to `SUMMARY_MAX_DEPTH` (1). A level-12 summary is built from the map data, so needs nothing beneath it; a coarser one needs all the summaries beneath it. A summary job that would need jobs deeper than the limit makes none, and fails. A request at a lower depth for a summary already queued supersedes the queued job, which takes the lower depth (and retries it, if it failed only for being too deep).
+
+A tile whose summaries can't all be built within the limit is answered with a placeholder: an empty tile (204) with `X-Tile-Status: placeholder`, not to be cached. Nothing is queued for it, but the request is logged. With the limit at 1, a z11 tile queues the level-12 summaries it needs, but a z10 tile is only rendered once all 16 level-12 summaries beneath it exist: the pyramid fills from the bottom, as tiles at z13 to z11 are viewed, and a request for a coarse tile never sets off thousands of reads. At 2, a z10 tile queues its level-10 summary and the level-12 summaries beneath it.
+
+A job needing summaries that don't exist yet, but can be built, queues them, ahead of itself, and waits, looking again after a while that grows the longer it waits (up to `SUMMARY_WAIT_MAX`). It fails if one of them fails, or if it has waited `SUMMARY_WAIT_LIMIT` seconds (30 minutes).
 
 The map database is read the way pgmap reads it: in one repeatable-read, read-only transaction, with pgmap's tables locked first (static layer, then modify layer, each in pgmap's order) so that everything read is from one moment. The static and modify layers are merged as pgmap's views do.
 
@@ -18,6 +49,8 @@ The map database is read the way pgmap reads it: in one repeatable-read, read-on
 - `pycromap/` - the Django project: settings and URLs
 - `mapdata/` - reading the pycrocosm map database (`DATABASES["pycrocosm"]`, only ever read)
 - `tiles/` - tile state and the render queue, rendering, the tile and map page views, and the `render_tiles` command
+- `summaries/` - tile summaries: building, merging, and `summary.lua`
+- `profile/` - the tilemaker profile tiles are rendered with
 - `tilemaker/` - tilemaker-core, the renderer (a submodule)
 
 ## Setting up
@@ -43,13 +76,22 @@ Copy `.env.example` to `.env` and give it the pycrocosm database's details, then
 Run the web server and, alongside it, at least one renderer:
 
     venv/bin/python manage.py runserver
-    venv/bin/python manage.py render_tiles --workers 2
+    venv/bin/python manage.py render_tiles
 
 The map is at http://localhost:8000/. Tile states can be seen in the admin, at `/admin/` (`manage.py createsuperuser` first).
 
-Each renderer process renders `--workers` tiles at once; run more processes to render more. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
+Each renderer process works on `--workers` jobs at once (`RENDER_WORKERS`, 16); run more processes to do more. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
 
-In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`; with `DEBUG` on, Django does.
+Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per tile, named with the data version they came from (`{z}/{x}/{y}.{version}.pbf.gz`); a newer version replaces the older. Other zooms keep only each tile's latest rendering, in the database. In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`, saying the files are gzipped vector tiles; with `DEBUG` on, Django does. With nginx:
+
+    location /tilecache/ {
+        alias /path/to/tilecache/;
+        types { }
+        default_type application/vnd.mapbox-vector-tile;
+        add_header Content-Encoding gzip;
+        # The version is in the name, so a file never changes
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
 
 ## With Docker
 
@@ -60,7 +102,9 @@ In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`; w
 
 The map is then at http://localhost:8082/. The image builds tilemaker-core from the submodule, and pyo5m from `../extractupdate/pyo5m` (`PYO5M_SOURCE` to change it).
 
-The pycrocosm database's details come from `.env`, as without Docker, but the containers reach it at `host.docker.internal`, the machine running Docker, unless `PYCROMAP_DB_HOST` says otherwise. PostgreSQL there must accept connections from the Docker network. Set `COASTLINE_DIR` and `LANDCOVER_DIR` to where the shapefiles the tilemaker config reads are, if you have them. The web server is Django's development server, for now.
+The pycrocosm database's details come from `.env`, as without Docker, but the containers reach it at `host.docker.internal`, the machine running Docker, unless `PYCROMAP_DB_HOST` says otherwise. PostgreSQL there must accept connections from the Docker network. Set `COASTLINE_DIR` and `LANDCOVER_DIR` to where the shapefiles the profile reads are, if you have them.
+
+The web server is gunicorn, with `WEB_WORKERS` processes (16). Each handles one request at a time, so that is also how many tile requests can be waiting for the renderer at once. A request waits up to `TILE_REQUEST_WAIT` seconds (600); gunicorn's `WEB_TIMEOUT` (660) must be longer.
 
 ## Tests
 

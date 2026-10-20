@@ -2,6 +2,7 @@
 .env
 # pycromap's own database
 db.sqlite3*
+test_db.sqlite3*
 # Rendered tiles, and collected static files
 tilecache/
 staticfiles/
