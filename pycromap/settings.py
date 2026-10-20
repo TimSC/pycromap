@@ -208,6 +208,12 @@ SUMMARY_LUA = Path(env("SUMMARY_LUA", str(BASE_DIR / "summaries" / "summary.lua"
 # summaries out of date.
 SUMMARY_SIMPLIFY_PIXELS = float(env("SUMMARY_SIMPLIFY_PIXELS", "16"))
 
+# Whether summaries merge similar objects entirely within a tile: ways with
+# the same tags are concatenated, and multipolygon relations with the same
+# tags are combined. Objects reaching the tile's edge are left alone, as
+# their copies in adjacent tiles must match.
+MERGE_SUMMARY_OBJECTS = env("MERGE_SUMMARY_OBJECTS", "1") == "1"
+
 # How deep jobs for summaries may go: a tile's request makes jobs for the
 # summaries it needs at depth 1; those may make jobs for the summaries beneath
 # them at depth 2, and so on, up to this. A tile whose summaries can't be

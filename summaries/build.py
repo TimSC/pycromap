@@ -18,6 +18,7 @@ from django.conf import settings
 from django.utils import timezone
 from shapely.geometry import LineString
 
+from tiles.tilegeo import tile_bounds
 from .lua import summary_filter
 from .models import TileSummary
 
@@ -182,6 +183,107 @@ def merge(summaries):
 	return out
 
 
+# ---- Merging similar objects
+
+def merge_objects(data, zoom, x, y):
+	"""Merges similar objects entirely within the tile (see
+	MERGE_SUMMARY_OBJECTS): ways with the same tags are concatenated into
+	chains, and multipolygon relations with the same tags are combined. Objects
+	reaching the tile's edge are left alone, as their copies in adjacent tiles
+	must match."""
+	if not settings.MERGE_SUMMARY_OBJECTS:
+		return data
+	west, south, east, north = tile_bounds(zoom, x, y)
+	nodes_in = {n.id for n in data.nodes if west <= n.lon <= east and south <= n.lat <= north}
+	ways_in = {w.id for w in data.ways if all(r in nodes_in for r in w.refs)}
+	interior_w = [w for w in data.ways if w.id in ways_in]
+	exterior_w = [w for w in data.ways if w.id not in ways_in]
+	data.ways = sorted(exterior_w + _concatenate_ways(interior_w), key=lambda w: w.id)
+	interior_r = [r for r in data.relations
+		if all(m.type == "node" and m.ref in nodes_in
+			or m.type == "way" and m.ref in ways_in
+			for m in r.members)]
+	exterior_r = [r for r in data.relations if r not in interior_r]
+	data.relations = sorted(exterior_r + _combine_multipolygons(interior_r), key=lambda r: r.id)
+	return data
+
+
+def _concatenate_ways(ways):
+	"""Concatenates open ways with the same tags into chains. Closed ways
+	(polygons) are kept as they are."""
+	groups = {}
+	for w in ways:
+		groups.setdefault(json.dumps(w.tags, sort_keys=True), []).append(w)
+	result = []
+	for group in groups.values():
+		closed = [w for w in group if w.refs[0] == w.refs[-1]]
+		open_ = [w for w in group if w.refs[0] != w.refs[-1]]
+		result.extend(closed)
+		by_end = {}
+		for i, w in enumerate(open_):
+			by_end.setdefault(w.refs[0], []).append(i)
+			by_end.setdefault(w.refs[-1], []).append(i)
+		used = [False] * len(open_)
+		for start in range(len(open_)):
+			if used[start]:
+				continue
+			used[start] = True
+			refs = list(open_[start].refs)
+			changed = True
+			while changed:
+				changed = False
+				for node in (refs[0], refs[-1]):
+					for i in by_end.get(node, []):
+						if used[i]:
+							continue
+						other = open_[i].refs
+						if node == refs[-1]:
+							if other[0] == node:
+								refs.extend(other[1:])
+							elif other[-1] == node:
+								refs.extend(reversed(other[:-1]))
+							else:
+								continue
+						elif node == refs[0]:
+							if other[0] == node:
+								refs = other[1:] + refs
+							elif other[-1] == node:
+								refs = list(reversed(other[:-1])) + refs
+							else:
+								continue
+						used[i] = True
+						changed = True
+						break
+			result.append(pyo5m.Way(open_[start].id, refs, open_[start].tags))
+	return result
+
+
+def _combine_multipolygons(relations):
+	"""Combines multipolygon relations with the same tags into one, with the
+	union of their members. Other relations are kept as they are."""
+	groups = {}
+	other = []
+	for r in relations:
+		if r.tags.get("type") == "multipolygon":
+			groups.setdefault(json.dumps(r.tags, sort_keys=True), []).append(r)
+		else:
+			other.append(r)
+	result = list(other)
+	for group in groups.values():
+		if len(group) == 1:
+			result.append(group[0])
+			continue
+		first = group[0]
+		members, seen = [], set()
+		for r in group:
+			for m in r.members:
+				if (m.type, m.ref) not in seen:
+					seen.add((m.type, m.ref))
+					members.append(m)
+		result.append(pyo5m.Relation(first.id, members, first.tags))
+	return result
+
+
 # ---- Storing
 
 def encode(data):
@@ -247,7 +349,8 @@ def build_from_data(level, x, y, data, version):
 		return
 	if current(TileSummary.objects.filter(zoom=level, x=x, y=y, version=version)).exists():
 		return
-	store(level, x, y, summarize(data, level), version)
+	data = summarize(data, level)
+	store(level, x, y, merge_objects(data, level, x, y), version)
 
 
 def build_from_finer(level, x, y):
@@ -259,5 +362,6 @@ def build_from_finer(level, x, y):
 	if absent:
 		return absent
 	loaded = [load(*tile) for tile in beneath]
-	store(level, x, y, summarize(merge(loaded), level), max(version for _, version in loaded))
+	data = summarize(merge(loaded), level)
+	store(level, x, y, merge_objects(data, level, x, y), max(version for _, version in loaded))
 	return []

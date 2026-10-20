@@ -86,6 +86,108 @@ class MergeTests(TestCase):
 		self.assertEqual(merged.nodes[0].tags, {"name": "new"})
 
 
+class MergeObjectsTests(TestCase):
+	# Tile (1, 0, 0) covers lon [-180, 0], lat [0, ~85]
+	def _data(self):
+		return osm(
+			nodes=[
+				pyo5m.Node(1, 10, -90), pyo5m.Node(2, 20, -90), pyo5m.Node(3, 30, -90),
+				pyo5m.Node(4, 40, -90), pyo5m.Node(5, 50, -90), pyo5m.Node(6, 60, -90),
+				pyo5m.Node(7, -10, -90),   # lat < 0: outside the tile
+				pyo5m.Node(8, 10, -80), pyo5m.Node(9, 20, -80), pyo5m.Node(10, 30, -80),
+				pyo5m.Node(11, 10, -70), pyo5m.Node(12, 20, -70), pyo5m.Node(13, 30, -70),
+			],
+			ways=[
+				pyo5m.Way(100, [1, 2, 3], {"highway": "primary"}),
+				pyo5m.Way(101, [3, 4], {"highway": "primary"}),
+				pyo5m.Way(102, [5, 6], {"highway": "primary"}),
+				pyo5m.Way(103, [2, 7], {"highway": "primary"}),  # boundary: node 7 outside
+				pyo5m.Way(104, [8, 9, 10, 8], {"natural": "water"}),  # closed
+				pyo5m.Way(105, [11, 12], {"landuse": "forest"}),
+				pyo5m.Way(106, [12, 13], {"landuse": "grass"}),
+			],
+			relations=[
+				pyo5m.Relation(200, [pyo5m.Member("way", 105, "outer"), pyo5m.Member("way", 106, "outer")],
+					{"type": "multipolygon", "landuse": "forest"}),
+				pyo5m.Relation(201, [pyo5m.Member("way", 104, "outer")],
+					{"type": "multipolygon", "natural": "water"}),
+			])
+
+	def test_connected_ways_with_same_tags_are_concatenated(self):
+		out = build.merge_objects(self._data(), 1, 0, 0)
+		by_id = {w.id: w for w in out.ways}
+		self.assertEqual(by_id[100].refs, [1, 2, 3, 4])  # 100 + 101 merged
+		self.assertNotIn(101, by_id)                        # absorbed
+		self.assertEqual(by_id[102].refs, [5, 6])            # not connected, kept
+
+	def test_ways_with_different_tags_are_not_merged(self):
+		out = build.merge_objects(self._data(), 1, 0, 0)
+		by_id = {w.id: w for w in out.ways}
+		self.assertEqual(by_id[105].refs, [11, 12])
+		self.assertEqual(by_id[106].refs, [12, 13])
+
+	def test_boundary_ways_are_not_merged(self):
+		out = build.merge_objects(self._data(), 1, 0, 0)
+		by_id = {w.id: w for w in out.ways}
+		self.assertEqual(by_id[103].refs, [2, 7])  # kept as-is
+
+	def test_closed_ways_are_not_concatenated(self):
+		out = build.merge_objects(self._data(), 1, 0, 0)
+		by_id = {w.id: w for w in out.ways}
+		self.assertEqual(by_id[104].refs, [8, 9, 10, 8])
+
+	def test_multipolygons_with_same_tags_are_combined(self):
+		out = build.merge_objects(self._data(), 1, 0, 0)
+		self.assertEqual(len(out.relations), 2)  # 200+201 share no tags, 200 alone
+		by_id = {r.id: r for r in out.relations}
+		self.assertIn(200, by_id)
+		self.assertIn(201, by_id)
+
+	def test_multipolygons_with_identical_tags_are_combined(self):
+		data = osm(
+			nodes=[pyo5m.Node(1, 10, -90), pyo5m.Node(2, 20, -90), pyo5m.Node(3, 30, -90),
+				pyo5m.Node(4, 40, -90)],
+			ways=[pyo5m.Way(10, [1, 2], {"landuse": "forest"}), pyo5m.Way(11, [3, 4], {"landuse": "forest"})],
+			relations=[
+				pyo5m.Relation(20, [pyo5m.Member("way", 10, "outer")], {"type": "multipolygon", "landuse": "forest"}),
+				pyo5m.Relation(21, [pyo5m.Member("way", 11, "outer")], {"type": "multipolygon", "landuse": "forest"}),
+			])
+		out = build.merge_objects(data, 1, 0, 0)
+		self.assertEqual(len(out.relations), 1)
+		self.assertEqual(out.relations[0].id, 20)
+		self.assertEqual(len(out.relations[0].members), 2)
+
+	def test_disabled_by_setting(self):
+		data = self._data()
+		with override_settings(MERGE_SUMMARY_OBJECTS=False):
+			out = build.merge_objects(data, 1, 0, 0)
+		self.assertEqual(len(out.ways), 7)  # unchanged
+
+	def test_chains_merge_in_order(self):
+		data = osm(
+			nodes=[pyo5m.Node(i, 10 + i, -90) for i in range(1, 6)],
+			ways=[
+				pyo5m.Way(1, [1, 2, 3], {"highway": "primary"}),
+				pyo5m.Way(2, [3, 4], {"highway": "primary"}),
+				pyo5m.Way(3, [4, 5], {"highway": "primary"}),
+			])
+		out = build.merge_objects(data, 1, 0, 0)
+		self.assertEqual(len(out.ways), 1)
+		self.assertEqual(out.ways[0].refs, [1, 2, 3, 4, 5])
+
+
+	def test_reverse_direction_is_merged(self):
+		data = osm(
+			nodes=[pyo5m.Node(1, 10, -90), pyo5m.Node(2, 20, -90), pyo5m.Node(3, 30, -90)],
+			ways=[
+				pyo5m.Way(1, [1, 2], {"highway": "primary"}),
+				pyo5m.Way(2, [3, 2], {"highway": "primary"}),  # reversed: ends at 2
+			])
+		out = build.merge_objects(data, 1, 0, 0)
+		self.assertEqual(len(out.ways), 1)
+		self.assertEqual(sorted(out.ways[0].refs), [1, 2, 3])
+
+
 class PyramidTests(TestCase):
 	def test_tiles_beneath(self):
 		self.assertEqual(build.tiles_beneath(11, 3, 4, 12), [(12, 6, 8), (12, 6, 9), (12, 7, 8), (12, 7, 9)])
