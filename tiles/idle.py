@@ -81,61 +81,77 @@ def _near(seeds, zoom, radius):
 					yield r, x, y
 
 
-def _candidates(sweep):
-	"""What could be done now, as (kind, zoom), and a test of whether a tile at
-	that zoom is worth doing and can be done now, highest zooms first. For the
+def _candidate_levels(sweep):
+	"""The (zoom, kind) pairs that could be done, highest zoom first. For the
 	rings around the seeds, base-level summaries: the cheapest way to have the
 	pyramid near where someone is looking. For the planet sweep, the base
 	tiles instead: their rendering builds the summaries, so the sweep never
-	builds a summary it would render over.
-	"""
-	kinds = []
+	builds a summary it would render over."""
 	base = summaries.base_level()
 	base_is_tile = base is not None and (settings.TILE_ZOOMS.get(base) or {}).get("source") == "data"
 	levels = summaries.levels()
 	if sweep and base_is_tile:
 		levels = [level for level in levels if level != base]
-	stored = {level: _summaries_at(level) for level in summaries.levels()}
-	for level in levels:
-		finer = summaries.finer_level(level)
-
-		def ready(x, y, level=level, finer=finer):
-			if (x, y) in stored[level]:
-				return False
-			if finer is None:
-				return True
-			return all((fx, fy) in stored[finer] for _, fx, fy in summaries.tiles_beneath(level, x, y, finer))
-		kinds.append((level, TileState.SUMMARY, ready))
-
+	kinds = [(level, TileState.SUMMARY) for level in levels]
 	# A tile of a cached zoom can be rendered ahead; the base tile, which is
 	# rendered for the sweep (its rendering builds its summary)
 	for zoom, config in settings.TILE_ZOOMS.items():
 		if not (config.get("cache") or (sweep and zoom == base and base_is_tile)):
 			continue
-		rendered = set(TileState.objects.filter(kind=TileState.TILE, zoom=zoom, status=TileState.DONE,
-			rendered_at__isnull=False).values_list("x", "y"))
-
-		def ready(x, y, zoom=zoom, config=config, rendered=rendered):
-			if (x, y) in rendered:
-				return False
-			if config["source"] != "summary":
-				return True
-			level = config["level"]
-			return all((sx, sy) in stored.get(level, ()) for _, sx, sy in summaries.tiles_beneath(zoom, x, y, level))
-		kinds.append((zoom, TileState.TILE, ready))
-
+		kinds.append((zoom, TileState.TILE))
 	# Highest zooms first; at the same zoom, tiles before summaries (rendering
 	# a tile from the map data builds its summary too)
 	return sorted(kinds, key=lambda k: (-k[0], k[1] != TileState.TILE))
 
 
-def _rendered_x(kind, zoom, y):
-	"""The x of row y at (kind, zoom) that are done: stored summaries, or
-	rendered tiles."""
+def _candidates(sweep):
+	"""As _candidate_levels, with a test of whether a tile at that zoom is
+	worth doing and can be done now. For the sweep the test is None: the
+	frontiers (tiles.idle._frontiers) do their own recheck of what is
+	rendered, and the test would only cost the queries to build it."""
+	if sweep:
+		return [(zoom, kind, None) for zoom, kind in _candidate_levels(sweep)]
+	kinds = []
+	stored = {level: _summaries_at(level) for level in summaries.levels()}
+	for level, kind in _candidate_levels(sweep):
+		if kind == TileState.SUMMARY:
+			finer = summaries.finer_level(level)
+
+			def ready(x, y, level=level, finer=finer):
+				if (x, y) in stored[level]:
+					return False
+				if finer is None:
+					return True
+				return all((fx, fy) in stored[finer] for _, fx, fy in summaries.tiles_beneath(level, x, y, finer))
+			kinds.append((level, TileState.SUMMARY, ready))
+		else:
+			config = settings.TILE_ZOOMS[level]
+			rendered = set(TileState.objects.filter(kind=TileState.TILE, zoom=level, status=TileState.DONE,
+				rendered_at__isnull=False).values_list("x", "y"))
+
+			def ready(x, y, level=level, config=config, rendered=rendered):
+				if (x, y) in rendered:
+					return False
+				if config["source"] != "summary":
+					return True
+				summary_level = config["level"]
+				return all((sx, sy) in stored.get(summary_level, ()) for _, sx, sy in summaries.tiles_beneath(level, x, y, summary_level))
+			kinds.append((level, TileState.TILE, ready))
+	return kinds
+
+
+def _rendered_xy(kind, zoom, ys):
+	"""The rendered x of each row y in ys at (kind, zoom), as {y: {x, ...}}:
+	stored summaries, or rendered tiles."""
 	if kind == TileState.SUMMARY:
-		return TileSummary.objects.filter(zoom=zoom, y=y).values_list("x", flat=True)
-	return TileState.objects.filter(kind=TileState.TILE, zoom=zoom, y=y,
-		status=TileState.DONE, rendered_at__isnull=False).values_list("x", flat=True)
+		pairs = TileSummary.objects.filter(zoom=zoom, y__in=ys).values_list("y", "x")
+	else:
+		pairs = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, y__in=ys,
+			status=TileState.DONE, rendered_at__isnull=False).values_list("y", "x")
+	rendered = {}
+	for y, x in pairs:
+		rendered.setdefault(y, set()).add(x)
+	return rendered
 
 
 def _ensure_sweep_rows(kind, zoom):
@@ -160,7 +176,7 @@ def _frontiers(limit, rank, kind, zoom, worker):
 	rows = list(rows_qs.order_by(
 		Case(When(claimed_by=worker, then=0), default=1), "y"
 	).values_list("pk", "y")[:limit])
-	frontiers = []
+	claimed = []
 	n = 1 << zoom
 	now = timezone.now()
 	for pk, y in rows:
@@ -170,10 +186,13 @@ def _frontiers(limit, rank, kind, zoom, worker):
 				claimed_by=worker, claimed_at=now):
 			if not TileSweep.objects.filter(pk=pk, claimed_by=worker).exists():
 				continue
+		claimed.append((pk, y))
+	rendered = _rendered_xy(kind, zoom, [y for _, y in claimed])
+	frontiers = []
+	for pk, y in claimed:
 		# The first gap in the row is what's left to do
-		rendered = set(_rendered_x(kind, zoom, y))
 		x = 0
-		while x < n and x in rendered:
+		while x < n and x in rendered.get(y, ()):
 			x += 1
 		if x < n:
 			frontiers.append((y, x))

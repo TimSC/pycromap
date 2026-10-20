@@ -55,21 +55,17 @@ def request_tile(zoom, x, y, rerender):
 		# A new tile has no rendering, so it is queued below
 		tile, _ = TileState.objects.get_or_create(kind=TileState.TILE, zoom=zoom, x=x, y=y,
 			defaults={"status": TileState.DONE})
-		tile.requested_at = now
-		tile.request_count = F("request_count") + 1
+		updates = {"requested_at": now, "request_count": F("request_count") + 1}
 		queued_at = None
 		if tile.status in (TileState.QUEUED, TileState.RENDERING) and tile.queued_at:
 			# Already on its way: wait for that rendering
 			queued_at = tile.queued_at
-			tile.priority = time.time()
+			updates["priority"] = time.time()
 		elif rerender or tile.status == TileState.FAILED or tile.rendered_at is None:
-			tile.status = TileState.QUEUED
-			tile.priority = time.time()
-			tile.queued_at = queued_at = now
-			tile.not_before = tile.waiting_since = None
-			tile.attempts = 0
-			tile.error = ""
-		tile.save()
+			updates.update(status=TileState.QUEUED, priority=time.time(), queued_at=now,
+				not_before=None, waiting_since=None, attempts=0, error="")
+			queued_at = now
+		TileState.objects.filter(pk=tile.pk).update(**updates)
 		tile.refresh_from_db()
 	return tile, queued_at
 
