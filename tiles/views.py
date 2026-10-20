@@ -147,17 +147,20 @@ def cached_tile(request, path):
 	if not os.path.isfile(full):
 		raise Http404()
 	response = _gzipped_tile(FileResponse(open(full, "rb"), content_type=MVT_CONTENT_TYPE))
-	# The name has the version in it, so the file never changes
-	response["Cache-Control"] = "public, max-age=31536000, immutable"
+	# The name has the version in it, so a rendering of a given version never
+	# changes; but a re-rendering at the same version (a new tilemaker profile)
+	# must reach the client, so the client's hold on it is the zoom's max_age
+	max_age = queue.zoom_config(int(path.split("/")[0])).get("max_age") or 86400
+	response["Cache-Control"] = "public, max-age={}".format(max_age)
 	return response
 
 
 @require_GET
 def tilejson(request):
-	"""TileJSON for the tiles served."""
+	"""TileJSON for the tiles served, as fresh as the style it is fetched with."""
 	zooms = sorted(settings.TILE_ZOOMS)
 	west, south, east, north = (float(v) for v in settings.MAP_INITIAL_BBOX.split(","))
-	return JsonResponse({
+	body = {
 		"tilejson": "2.1.0",
 		"name": "pycromap",
 		"scheme": "xyz",
@@ -166,7 +169,8 @@ def tilejson(request):
 		"maxzoom": zooms[-1],
 		"bounds": [-180, -85.05112877980659, 180, 85.0511287798066],
 		"center": [(west + east) / 2, (south + north) / 2, zooms[-1]],
-	})
+	}
+	return _no_store(JsonResponse(body))
 
 
 @require_GET
@@ -176,15 +180,16 @@ def style(request):
 		style = json.load(f)
 	style["sources"]["openmaptiles"] = {"type": "vector", "url": "/spec.json"}
 	style["glyphs"] = static("tiles/fonts/") + "{fontstack}/{range}.pbf"
-	return JsonResponse(style)
+	# The style changes with the code, so it must not be heuristically cached
+	return _no_store(JsonResponse(style))
 
 
 @require_GET
 def metadata(request):
 	"""Where the map page opens."""
 	zooms = sorted(settings.TILE_ZOOMS)
-	return JsonResponse({"name": "pycromap", "format": "pbf", "bounds": settings.MAP_INITIAL_BBOX,
-		"minzoom": str(zooms[0]), "maxzoom": str(zooms[-1]), "viewer_maxzoom": settings.VIEWER_MAX_ZOOM})
+	return _no_store(JsonResponse({"name": "pycromap", "format": "pbf", "bounds": settings.MAP_INITIAL_BBOX,
+		"minzoom": str(zooms[0]), "maxzoom": str(zooms[-1]), "viewer_maxzoom": settings.VIEWER_MAX_ZOOM}))
 
 
 @require_GET

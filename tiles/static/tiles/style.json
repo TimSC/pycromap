@@ -907,6 +907,54 @@
       }
     },
     {
+      "id": "housenumber",
+      "type": "symbol",
+      "source": "openmaptiles",
+      "source-layer": "housenumber",
+      "filter": [
+        "has",
+        "housenumber"
+      ],
+      "layout": {
+        "text-field": [
+          "get",
+          "housenumber"
+        ],
+        "text-font": [
+          "KlokanTech Noto Sans Regular"
+        ],
+        "text-size": {
+          "base": 1.2,
+          "stops": [
+            [
+              14,
+              9
+            ],
+            [
+              16,
+              13
+            ]
+          ]
+        },
+        "text-anchor": "center",
+        "text-allow-overlap": true
+      },
+      "paint": {
+        "text-color": "#444",
+        "text-halo-color": "#fff",
+        "text-halo-width": 1,
+        "text-opacity": [
+          "step",
+          [
+            "zoom"
+          ],
+          0,
+          18,
+          1
+        ]
+      }
+    },
+    {
       "id": "tunnel-service-track-casing",
       "type": "line",
       "metadata": {
@@ -3067,8 +3115,8 @@
       "paint": {
         "line-color": "#d00",
         "line-dasharray": [
-          0.5,
-          0.5
+          2,
+          2
         ],
         "line-width": {
           "base": 1.2,
@@ -3086,7 +3134,8 @@
               9
             ]
           ]
-        }
+        },
+        "line-opacity": 0.6
       }
     },
     {
@@ -3114,8 +3163,8 @@
       "paint": {
         "line-color": "#00c",
         "line-dasharray": [
-          0.5,
-          0.5
+          3,
+          3
         ],
         "line-width": {
           "base": 1.2,
@@ -3133,7 +3182,8 @@
               9
             ]
           ]
-        }
+        },
+        "line-opacity": 0.6
       }
     },
     {
@@ -3162,8 +3212,8 @@
       "paint": {
         "line-color": "#8b4513",
         "line-dasharray": [
-          0.7,
-          0.3
+          4,
+          3
         ],
         "line-width": {
           "base": 1.2,
@@ -3181,7 +3231,8 @@
               9
             ]
           ]
-        }
+        },
+        "line-opacity": 0.6
       }
     },
     {

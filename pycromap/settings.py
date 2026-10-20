@@ -256,7 +256,7 @@ MAP_INITIAL_BBOX = env("MAP_INITIAL_BBOX", "-1.095,50.795,-1.085,50.8")
 
 # How far the map page zooms in. Beyond the highest zoom in TILE_ZOOMS it
 # shows that zoom's tiles, scaled up
-VIEWER_MAX_ZOOM = int(env("VIEWER_MAX_ZOOM", "16"))
+VIEWER_MAX_ZOOM = int(env("VIEWER_MAX_ZOOM", "18"))
 
 LOGGING = {
 	"version": 1,

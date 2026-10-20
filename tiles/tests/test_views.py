@@ -45,7 +45,7 @@ class TileViewTests(TransactionTestCase):
 			response = cached_tile(RequestFactory().get("/"), "12/1/2.5.pbf.gz")
 		self.assertEqual(b"".join(response.streaming_content), b"tile")
 		self.assertEqual((response["Content-Encoding"], response["Content-Type"]), ("gzip", "application/vnd.mapbox-vector-tile"))
-		self.assertIn("immutable", response["Cache-Control"])
+		self.assertIn("max-age=3600", response["Cache-Control"])
 
 	def test_cache_view_stays_in_the_cache(self):
 		from django.core.exceptions import SuspiciousFileOperation
