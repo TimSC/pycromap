@@ -151,8 +151,8 @@ class Command(BaseCommand):
 					break
 				wait = poll
 				queue.requeue_abandoned()
-				# Plan this process's share of the idle work
-				if idle_work and idle.queue_idle_work(1) == 0:
+				# Keep idle work queued for the whole fleet
+				if idle_work and idle.queue_idle_work() == 0:
 					wait = max(poll, settings.IDLE_POLL)
 				stop.wait(wait)
 		finally:

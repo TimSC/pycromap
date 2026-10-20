@@ -1,7 +1,9 @@
 import time
+from datetime import timedelta
 
 import pyo5m
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from summaries import build
 from tiles import idle, queue
@@ -30,6 +32,18 @@ class PlanTests(TestCase):
 		self.assertEqual(len(planned), 9)  # the tile and the ring around it
 		self.assertTrue(all(z == 12 for _, z, _, _ in planned))
 
+	def test_the_newest_seed_comes_first(self):
+		t0 = timezone.now() - timedelta(hours=1)
+		TileState.objects.create(kind=TileState.TILE, zoom=12, x=100, y=100, status=TileState.DONE,
+			request_count=1, requested_at=t0)
+		TileState.objects.create(kind=TileState.TILE, zoom=12, x=200, y=200, status=TileState.DONE,
+			request_count=1, requested_at=t0 + timedelta(minutes=2))
+		planned = idle.plan(10)
+		# The nine around the newer seed, before anything near the older one
+		self.assertEqual(planned[0], (TileState.SUMMARY, 12, 200, 200))
+		for _, _, x, y in planned[:9]:
+			self.assertLessEqual(max(abs(x - 200), abs(y - 200)), 1)
+
 	def test_skips_what_exists_or_is_under_way(self):
 		request(12, 100, 100)
 		build.store(12, 100, 100, pyo5m.OsmData(), 1)
@@ -52,41 +66,47 @@ class PlanTests(TestCase):
 
 	def test_idle_work_does_not_seed_more(self):
 		request(12, 100, 100)
-		idle.queue_idle_work(20)
+		idle.queue_idle_work()
 		# Only the requested tile seeds: everything planned is within a tile of it
 		for job in TileState.objects.filter(idle=True):
 			self.assertLessEqual(max(abs(job.x - 100), abs(job.y - 100)), 1)
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=2, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=2, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1, RENDER_WORKERS=4)
 class QueueIdleTests(TestCase):
-	def test_fills_up_to_the_workers_below_requests(self):
+	def test_fills_up_to_the_renderers_below_requests(self):
 		request(12, 100, 100)
-		self.assertEqual(idle.queue_idle_work(4), 4)
+		self.assertEqual(idle.queue_idle_work(), 4)  # one job per renderer
 		jobs = TileState.objects.filter(idle=True)
 		self.assertEqual(jobs.count(), 4)
 		self.assertTrue(all(j.status == TileState.QUEUED and j.priority < 0 and j.depth == 1 for j in jobs))
-		self.assertEqual(idle.queue_idle_work(4), 0)  # already enough queued
+		self.assertEqual(idle.queue_idle_work(), 0)  # already enough queued
 		# A request comes first
 		queue.request_tile(12, 50, 50, rerender=True)
 		self.assertEqual(queue.claim_next("w").zoom, 12)
 		self.assertFalse(TileState.objects.get(kind=TileState.TILE, x=50).idle)
 
+	def test_requested_jobs_do_not_count_towards_the_idle_queue(self):
+		request(12, 100, 100)
+		queue.request_tile(12, 50, 50, rerender=True)
+		# The request is queued, but the idle renderers still get their share
+		self.assertEqual(idle.queue_idle_work(), 4)
+
 	def test_request_takes_over_an_idle_job(self):
 		request(12, 100, 100)
-		idle.queue_idle_work(1)
-		job = TileState.objects.get(idle=True)
+		idle.queue_idle_work()
+		job = TileState.objects.filter(idle=True).order_by("-priority").first()
 		queue.queue_summaries([(job.zoom, job.x, job.y)], time.time(), 1)
 		job.refresh_from_db()
 		self.assertFalse(job.idle)
 		self.assertGreater(job.priority, 0)
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1, RENDER_WORKERS=1)
 class ClaimTests(TestCase):
 	def test_idle_jobs_are_left_unless_working_ahead(self):
 		request(12, 100, 100)
-		idle.queue_idle_work(1)
+		idle.queue_idle_work()
 		self.assertIsNone(queue.claim_next("w", idle=False))
 		self.assertTrue(queue.claim_next("w", idle=True).idle)
 

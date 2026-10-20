@@ -5,8 +5,8 @@ Only work that can be done straight away is chosen, as for requests: a
 summary at the base level (from the map data), a coarser summary whose
 summaries beneath it all exist, or a tile of a cached zoom that can be
 rendered now (rendering an uncached zoom's tile ahead would be wasted). The
-highest zooms come first, then those nearest a requested tile: only tiles
-someone asked for count, not those idle renderers did.
+highest zooms come first, then those nearest the newest requested tile: only
+tiles someone asked for count, not those idle renderers did.
 """
 
 import math
@@ -42,16 +42,23 @@ def _busy(kind, zoom):
 
 
 def _near(seeds, zoom, radius):
-	"""Tiles at zoom around the seeds, nearest first: (distance, x, y), the
-	distance in tiles at zoom, counting diagonals as one."""
+	"""Tiles at zoom around the seeds: (distance, x, y), the distance in tiles
+	at zoom, counting diagonals as one. The newest seed's rings come before
+	the next-newest seed's, so the place the user is now wins over where they
+	were."""
 	n = 1 << zoom
-	centres = set()
-	for seed_zoom, sx, sy in seeds:
+	centres = []
+	seen_centres = set()
+	for seed_zoom, sx, sy in seeds:  # newest first
 		scale = 2.0 ** (zoom - seed_zoom)
-		centres.add((min(n - 1, int(math.floor((sx + 0.5) * scale))), min(n - 1, int(math.floor((sy + 0.5) * scale)))))
+		centre = (min(n - 1, int(math.floor((sx + 0.5) * scale))), min(n - 1, int(math.floor((sy + 0.5) * scale))))
+		if centre in seen_centres:
+			continue
+		seen_centres.add(centre)
+		centres.append(centre)
 	seen = set()
-	for r in range(radius + 1):
-		for cx, cy in sorted(centres):
+	for cx, cy in centres:
+		for r in range(radius + 1):
 			for x in range(cx - r, cx + r + 1):
 				for y in range(cy - r, cy + r + 1):
 					if max(abs(x - cx), abs(y - cy)) != r or not (0 <= x < n and 0 <= y < n) or (x, y) in seen:
@@ -122,12 +129,13 @@ def plan(count):
 	return chosen
 
 
-def queue_idle_work(workers):
-	"""Queues idle jobs until there are as many queued as workers. Returns how
-	many it queued."""
+def queue_idle_work():
+	"""Queues idle jobs until there are as many idle jobs queued as there are
+	renderers (RENDER_WORKERS), so the whole fleet has work when the requests
+	run out. Returns how many it queued."""
 	queued = TileState.objects.filter(Q(not_before__isnull=True) | Q(not_before__lte=timezone.now()),
-		status=TileState.QUEUED).count()
-	wanted = workers - queued
+		status=TileState.QUEUED, idle=True).count()
+	wanted = settings.RENDER_WORKERS - queued
 	if wanted <= 0:
 		return 0
 	now = timezone.now()

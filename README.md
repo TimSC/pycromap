@@ -27,7 +27,7 @@ z12 is the highest zoom rendered: the profile gives it everything upstream's pro
 
 ### Working ahead
 
-With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest a requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. Each renderer plans, keeping one job queued, below every request. A request for something queued ahead takes the job over. With it off, renderers leave jobs queued ahead alone.
+With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest the newest requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. Each renderer plans, keeping as many idle jobs queued as there are renderers, below every request. A request for something queued ahead takes the job over. With it off, renderers leave jobs queued ahead alone.
 
 ### Summaries
 
