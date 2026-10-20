@@ -1,0 +1,9 @@
+# Settings for this machine, with secrets
+.env
+# pycromap's own database
+db.sqlite3*
+# Rendered tiles, and collected static files
+tilecache/
+staticfiles/
+__pycache__/
+*.pyc

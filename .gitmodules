@@ -1,0 +1,3 @@
+[submodule "tilemaker"]
+	path = tilemaker
+	url = git@github.com:TimSC/tilemaker.git

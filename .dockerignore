@@ -1,0 +1,12 @@
+.git
+.env
+db.sqlite3*
+tilecache/
+staticfiles/
+venv/
+**/__pycache__
+tilemaker/build/
+tilemaker/venv/
+tilemaker/coastline/
+tilemaker/landcover/
+tilemaker/.git

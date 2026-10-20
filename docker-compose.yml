@@ -1,0 +1,70 @@
+# pycromap with docker compose: the web server, a renderer, and pycromap's own
+# database and tile cache in a volume they share. Fetch the submodules first
+# (git submodule update --init --recursive).
+#
+#   docker compose up --build
+#
+# The map is then at http://localhost:8082/ (PYCROMAP_PORT to change it).
+#
+# The pycrocosm map database is reached at host.docker.internal, the machine
+# running Docker, unless PYCROMAP_DB_HOST says otherwise; PostgreSQL there must
+# accept connections from the Docker network. Its name, user, password and
+# table prefixes come from .env, as for running pycromap without Docker (see
+# .env.example).
+#
+# pyo5m is built from pycrocosm's extractupdate/pyo5m, beside this project,
+# unless PYO5M_SOURCE says where it is.
+#
+# The web server is Django's development server, for now.
+
+x-pycromap: &pycromap
+  image: pycromap
+  build:
+    context: .
+    additional_contexts:
+      pyo5m: ${PYO5M_SOURCE:-../extractupdate/pyo5m}
+    args:
+      # Files compiled at once
+      BUILD_JOBS: ${BUILD_JOBS:-4}
+  environment:
+    PYCROCOSM_DB_HOST: ${PYCROMAP_DB_HOST:-host.docker.internal}
+    PYCROCOSM_DB_PORT: ${PYCROCOSM_DB_PORT:-5432}
+    PYCROCOSM_DB_NAME: ${PYCROCOSM_DB_NAME:-db_map}
+    PYCROCOSM_DB_USER: ${PYCROCOSM_DB_USER:-pycrocosm}
+    PYCROCOSM_DB_PASSWORD: ${PYCROCOSM_DB_PASSWORD:-}
+    PYCROCOSM_STATIC_PREFIX: ${PYCROCOSM_STATIC_PREFIX:-planet_static_}
+    PYCROCOSM_MODIFY_PREFIX: ${PYCROCOSM_MODIFY_PREFIX:-pycrocosm_mod_}
+    MAP_INITIAL_BBOX: ${MAP_INITIAL_BBOX:--1.095,50.795,-1.085,50.8}
+    DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  volumes:
+    - pycromap-data:/data
+    # The coastline and landcover shapefiles the tilemaker config reads, if
+    # downloaded (tilemaker's get-coastline.sh and get-landcover.sh)
+    - ${COASTLINE_DIR:-./tilemaker/coastline}:/app/tilemaker/coastline:ro
+    - ${LANDCOVER_DIR:-./tilemaker/landcover}:/app/tilemaker/landcover:ro
+
+services:
+  migrate:
+    <<: *pycromap
+    command: ["python", "manage.py", "migrate", "--noinput"]
+
+  web:
+    <<: *pycromap
+    command: ["python", "manage.py", "runserver", "0.0.0.0:8000"]
+    ports:
+      - "${PYCROMAP_PORT:-8082}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  renderer:
+    <<: *pycromap
+    command: ["python", "manage.py", "render_tiles", "--workers", "${RENDER_WORKERS:-2}"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pycromap-data:

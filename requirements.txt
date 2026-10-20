@@ -1,0 +1,7 @@
+# The web application, the renderer and the admin
+django==6.1.2
+# Reading the pycrocosm map database
+psycopg2-binary==2.9.13
+# Writing map data as o5m or PBF for tilemaker-core. Not on PyPI: install it
+# from pycrocosm's extractupdate/pyo5m (see README.md). Brings protobuf.
+# pyo5m
