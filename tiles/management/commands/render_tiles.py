@@ -67,8 +67,9 @@ def render_tile_job(job):
 
 	if config["source"] == "data":
 		data, version = read_tile_data(job.zoom, job.x, job.y)
-		# Its summary, while the map data is here
-		if job.zoom == summaries.base_level():
+		# Its summary, while the map data is here: only for the zooms marked
+		# "summary" in TILE_ZOOMS, the finest of which the pyramid is built from
+		if config.get("summary"):
 			summaries.build_from_data(job.zoom, job.x, job.y, data, version)
 		return render_data(data, job.zoom, job.x, job.y), version
 

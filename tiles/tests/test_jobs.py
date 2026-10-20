@@ -54,6 +54,13 @@ class SummaryJobTests(TestCase):
 			render_one("w")
 		self.assertEqual(build.missing([(12, 5, 6)]), [])
 
+	@override_settings(TILE_ZOOMS={12: {"source": "data", "cache": False}})
+	def test_a_zoom_without_summary_builds_none(self):
+		queue.request_tile(12, 5, 6, rerender=True)
+		with mock.patch(READ, return_value=(pyo5m.OsmData(), 8)), mock.patch(RENDER, return_value=b"tile"):
+			render_one("w")
+		self.assertEqual(build.missing([(12, 5, 6)]), [(12, 5, 6)])
+
 	def test_waiting_backs_off(self):
 		queue.request_tile(11, 3, 4, rerender=True)
 		TileState.objects.filter(kind=TileState.SUMMARY).delete()

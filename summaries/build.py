@@ -240,7 +240,11 @@ def obtainable(level, x, y, depth):
 
 def build_from_data(level, x, y, data, version):
 	"""Builds and stores the summary of the base level's tile from its map data,
-	unless one from this version of the map data is already stored."""
+	unless one from this version of the map data is already stored. The base
+	level is the finest zoom TILE_ZOOMS marks "summary"; no other zoom has
+	a summary built from the map data."""
+	if level != base_level():
+		return
 	if current(TileSummary.objects.filter(zoom=level, x=x, y=y, version=version)).exists():
 		return
 	store(level, x, y, summarize(data, level), version)
