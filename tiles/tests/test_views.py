@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from tiles.management.commands.render_tiles import render_one
 from tiles.models import TileState
+from tiles.render import EMPTY_TILE
 
 
 class TileViewTests(TransactionTestCase):
@@ -59,7 +60,11 @@ class TileViewTests(TransactionTestCase):
 
 	def test_empty_cached_tile(self):
 		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="")
-		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 204)
+		response = self.client.get("/tiles/12/1/2.pbf")
+		self.assertEqual(response.status_code, 200)
+		self.assertEqual(response.content, EMPTY_TILE)
+		self.assertEqual((response["Content-Type"], response["Content-Encoding"]),
+			("application/vnd.mapbox-vector-tile", "gzip"))
 
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_tile_rendered_before_its_zoom_was_cached_is_rendered_again(self):
@@ -111,7 +116,9 @@ class TileViewTests(TransactionTestCase):
 				if not render_one("test"):
 					stop.wait(0.02)
 
-		with mock.patch("tiles.management.commands.render_tiles.read_tile_data", return_value=(pyo5m.OsmData(), 9)), \
+		data = pyo5m.OsmData()
+		data.nodes.append(pyo5m.Node(1, 0.0, 0.0, {}))
+		with mock.patch("tiles.management.commands.render_tiles.read_tile_data", return_value=(data, 9)), \
 				mock.patch("tiles.management.commands.render_tiles.render_data", return_value=b"vector tile"):
 			thread = threading.Thread(target=renderer)
 			thread.start()

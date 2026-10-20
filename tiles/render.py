@@ -20,6 +20,16 @@ class RenderError(Exception):
 	pass
 
 
+# A tile over open sea, with nothing but the ocean rectangle tilemaker adds
+# from its coastline shapefile. The same bytes for every such tile, so none
+# are stored on disk; the view serves this when a tile was rendered empty.
+EMPTY_TILE = bytes.fromhex(
+	"1f8b08000000000000039332ad60e2622d4f2c492dd26850"
+	"1012976056e2e7d45ce120c570d1e1920303c325077e2126"
+	"060629d6e49cc4e26225762ed6fce4d4c43c0055b1214d37"
+	"000000")
+
+
 def run_tilemaker(input_path, zoom, x, y, output_dir):
 	"""Renders one tile from a file of map data into output_dir. Returns the
 	tile's bytes (gzipped or not, as the config says), or b"" if there was

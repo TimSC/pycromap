@@ -71,6 +71,8 @@ def render_tile_job(job):
 		# "summary" in TILE_ZOOMS, the finest of which the pyramid is built from
 		if config.get("summary"):
 			summaries.build_from_data(job.zoom, job.x, job.y, data, version)
+		if not data.nodes and not data.ways and not data.relations:
+			return b"", version
 		return render_data(data, job.zoom, job.x, job.y), version
 
 	# From summaries: those beneath it at the configured level, merged

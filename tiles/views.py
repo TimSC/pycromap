@@ -16,6 +16,7 @@ from summaries import build as summaries
 from . import queue
 from .crop import crop
 from .models import TileState
+from .render import EMPTY_TILE
 from .tilegeo import valid_tile
 
 MVT_CONTENT_TYPE = "application/vnd.mapbox-vector-tile"
@@ -55,13 +56,21 @@ def _respond(tile, cached):
 	"""The response for a rendered tile."""
 	if cached:
 		if not tile.file:
-			return _no_store(HttpResponse(status=204))
+			return _empty_tile()
 		# Each rendering has its own file, so the redirect must not be
 		# remembered, but the file can be
 		return _no_store(HttpResponseRedirect(settings.TILE_CACHE_URL + tile.file))
 	if not tile.data:
-		return _no_store(HttpResponse(status=204))
+		return _empty_tile()
 	return _no_store(_gzipped_tile(HttpResponse(bytes(tile.data), content_type=MVT_CONTENT_TYPE)))
+
+
+def _empty_tile():
+	"""A tile over open sea, with nothing but the ocean rectangle: the same
+	bytes for every such tile, so they need no file on disk."""
+	response = _gzipped_tile(HttpResponse(EMPTY_TILE, content_type=MVT_CONTENT_TYPE))
+	response["Cache-Control"] = "public, max-age=31536000"
+	return response
 
 
 def _needs_rendering(existing, config):
