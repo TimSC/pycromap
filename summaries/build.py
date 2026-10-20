@@ -203,7 +203,8 @@ def merge_objects(data, zoom, x, y):
 		if all(m.type == "node" and m.ref in nodes_in
 			or m.type == "way" and m.ref in ways_in
 			for m in r.members)]
-	exterior_r = [r for r in data.relations if r not in interior_r]
+	interior_ids = {r.id for r in interior_r}
+	exterior_r = [r for r in data.relations if r.id not in interior_ids]
 	data.relations = sorted(exterior_r + _combine_multipolygons(interior_r), key=lambda r: r.id)
 	return data
 
