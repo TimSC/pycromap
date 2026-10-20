@@ -1,9 +1,9 @@
 """Building tile summaries.
 
 A summary keeps the objects of a tile's area that summary.lua picks for its
-level, whole, with their geometry simplified. The base level (the finest in
-SUMMARY_LEVELS, 13) is built from the map data; each coarser level from the
-summaries of the next finer level beneath it, merged.
+level, whole, with their geometry simplified. The summary levels are the
+zooms TILE_ZOOMS marks "summary"; the finest is built from the map data; each
+coarser level from the summaries of the next finer level beneath it, merged.
 """
 
 import gzip
@@ -53,12 +53,20 @@ def current(queryset):
 # ---- The pyramid
 
 def levels():
-	"""The summary levels, finest first."""
-	return sorted(settings.SUMMARY_LEVELS, reverse=True)
+	"""The summary levels, finest first: the zooms TILE_ZOOMS marks
+	"summary". Each summary zoom is checked to render from one of them."""
+	levels = sorted((zoom for zoom, config in settings.TILE_ZOOMS.items() if config.get("summary")),
+		reverse=True)
+	for zoom, config in settings.TILE_ZOOMS.items():
+		if config["source"] == "summary" and (config["level"] not in levels or config["level"] < zoom):
+			raise ValueError("zoom {} renders from level {}, which is not a summary level "
+				"(mark it \"summary\" in TILE_ZOOMS) or is lower than the zoom".format(zoom, config["level"]))
+	return levels
 
 
 def base_level():
-	return levels()[0]
+	"""The finest summary level (None if TILE_ZOOMS marks none)."""
+	return levels()[0] if levels() else None
 
 
 def finer_level(level):

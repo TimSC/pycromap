@@ -184,7 +184,7 @@ def metadata(request):
 	"""Where the map page opens."""
 	zooms = sorted(settings.TILE_ZOOMS)
 	return JsonResponse({"name": "pycromap", "format": "pbf", "bounds": settings.MAP_INITIAL_BBOX,
-		"minzoom": str(zooms[0]), "maxzoom": str(zooms[-1])})
+		"minzoom": str(zooms[0]), "maxzoom": str(zooms[-1]), "viewer_maxzoom": settings.VIEWER_MAX_ZOOM})
 
 
 @require_GET

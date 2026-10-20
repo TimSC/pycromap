@@ -46,8 +46,8 @@ COPY mapdata ./mapdata
 COPY summaries ./summaries
 COPY tiles ./tiles
 
-# The database and tile cache live in /data, a volume shared by the web
-# server and the renderer
+# The database and tile cache live in /data, mounted from the host and shared
+# by the web server and the renderer
 RUN useradd --create-home --uid 1000 pycromap && mkdir /data && chown pycromap /data
 USER pycromap
 ENV PYCROMAP_DB=/data/db.sqlite3 \

@@ -3,6 +3,8 @@
 # pycromap's own database
 db.sqlite3*
 test_db.sqlite3*
+# The database and tile cache, with Docker
+data/
 # Rendered tiles, and collected static files
 tilecache/
 staticfiles/

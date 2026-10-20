@@ -134,6 +134,8 @@ class PageTests(TransactionTestCase):
 		self.assertEqual(self.client.get("/").status_code, 200)
 		spec = self.client.get("/spec.json").json()
 		self.assertEqual(spec["tiles"], ["/tiles/{z}/{x}/{y}.pbf"])
+		with override_settings(VIEWER_MAX_ZOOM=16):
+			self.assertEqual(self.client.get("/metadata").json()["viewer_maxzoom"], 16)
 		style = self.client.get("/style.json").json()
 		self.assertEqual(style["sources"]["openmaptiles"]["url"], "/spec.json")
 		self.assertTrue(style["glyphs"].startswith("/static/tiles/fonts/"))

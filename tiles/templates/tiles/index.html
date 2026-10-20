@@ -49,7 +49,7 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		    center: [(Number(bounds[0])+Number(bounds[2]))/2,
 			         (Number(bounds[1])+Number(bounds[3]))/2], // starting position [lng, lat]
 		    zoom: 13, // starting zoom
-		    maxZoom: Number(data['maxzoom']) // the highest zoom served
+		    maxZoom: data['viewer_maxzoom'] // beyond the tiles served, they are scaled up
 		});
 		map.addControl(new mapboxgl.NavigationControl());
 		map.addControl(new mapboxgl.AttributionControl({ compact: false, customAttribution:

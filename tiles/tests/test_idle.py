@@ -7,8 +7,9 @@ from summaries import build
 from tiles import idle, queue
 from tiles.models import TileState
 
-ZOOMS = {12: {"source": "data", "cache": False}, 11: {"source": "summary", "level": 12, "cache": False},
-	10: {"source": "summary", "level": 10, "cache": False}}
+ZOOMS = {12: {"source": "data", "cache": False, "summary": True},
+	11: {"source": "summary", "level": 12, "cache": False},
+	10: {"source": "summary", "level": 10, "cache": False, "summary": True}}
 
 
 def request(zoom, x, y):

@@ -95,18 +95,20 @@ RENDER_TIMEOUT = int(env("RENDER_TIMEOUT", "600"))
 # (see mapdata/). It is only read: the router keeps migrations off it. Its
 # transactions are repeatable read, so that everything one read sees is from
 # one moment; the password is best kept in the environment or .env.
+PYCROMAP_DB = env("PYCROMAP_DB", str(BASE_DIR / "db.sqlite3"))
 DATABASES = {
 	"default": {
 		"ENGINE": "django.db.backends.sqlite3",
-		"NAME": env("PYCROMAP_DB", str(BASE_DIR / "db.sqlite3")),
+		"NAME": PYCROMAP_DB,
 		"OPTIONS": {
 			"timeout": 30,
 			"transaction_mode": "IMMEDIATE",
 			"init_command": "PRAGMA journal_mode=WAL;",
 		},
-		# A file, as tests render in threads: an in-memory database's shared
-		# cache fails at once on a locked table, rather than waiting
-		"TEST": {"NAME": str(BASE_DIR / "test_db.sqlite3")},
+		# A file beside the database, as tests render in threads: an in-memory
+		# database's shared cache fails at once on a locked table, rather than
+		# waiting
+		"TEST": {"NAME": str(Path(PYCROMAP_DB).parent / "test_db.sqlite3")},
 	},
 	"pycrocosm": {
 		"ENGINE": "django.db.backends.postgresql",
@@ -170,10 +172,13 @@ TILEMAKER = {
 # How each zoom is made. Each zoom served has an entry:
 #   "source": "data" - rendered from the map data of the tile's area
 #             "summary" - rendered from the summaries beneath the tile at
-#             "level" (a level of SUMMARY_LEVELS, no lower than the zoom),
-#             merged
+#             "level" (a summary level, no lower than the zoom), merged
 #             "crop" - cut from the tile covering it at zoom "from" (a lower
 #             zoom served), scaled up: quick, with that tile's content
+#   "summary": the zooms marked so form the summary pyramid: the finest is
+#              built from the map data (as its tiles render, or on its own);
+#              each coarser from the summaries of the next finer level
+#              beneath it, merged (see summaries/build.py)
 #   "cache": whether rendered tiles are kept and served as static files, or
 #            rendered afresh for every request (not for "crop", never kept)
 #   "max_age": for a cached zoom, seconds after which a tile is rendered
@@ -182,23 +187,18 @@ TILEMAKER = {
 # data should have everything the zooms cut from it show: the profile gives
 # z12 the content of upstream's z14 (see profile/process.lua).
 TILE_ZOOMS = {
-	14: {"source": "crop", "from": 12},
-	13: {"source": "crop", "from": 12},
-	12: {"source": "data", "cache": True, "max_age": 3600},
-	11: {"source": "summary", "level": 12, "cache": False},
-	10: {"source": "summary", "level": 10, "cache": False},
-	9: {"source": "summary", "level": 10, "cache": False},
-	8: {"source": "summary", "level": 8, "cache": False},
-	7: {"source": "summary", "level": 8, "cache": False},
-	6: {"source": "summary", "level": 6, "cache": False},
+	#14: {"source": "crop", "from": 12},
+	#13: {"source": "crop", "from": 12},
+	12: {"source": "data", "cache": True, "summary": True},
+	11: {"source": "summary", "level": 12, "cache": True},
+	10: {"source": "summary", "level": 12, "cache": True, "summary": True},
+	9: {"source": "summary", "level": 10, "cache": True},
+	8: {"source": "summary", "level": 10, "cache": True, "summary": True},
+	7: {"source": "summary", "level": 8, "cache": True},
+	6: {"source": "summary", "level": 8, "cache": True},
 }
 
 # ---- Summaries
-
-# The levels of the summary pyramid. The finest is built from the map data,
-# when its tiles are rendered (or when a summary is needed and missing); each
-# other from the 16 (or 4, ...) summaries of the next finer level beneath it.
-SUMMARY_LEVELS = [12, 10, 8, 6]
 
 # What summaries keep, at each level
 SUMMARY_LUA = Path(env("SUMMARY_LUA", str(BASE_DIR / "summaries" / "summary.lua")))
@@ -252,6 +252,10 @@ RENDER_ATTEMPTS = 3
 
 # Where the map page opens: minlon,minlat,maxlon,maxlat
 MAP_INITIAL_BBOX = env("MAP_INITIAL_BBOX", "-1.095,50.795,-1.085,50.8")
+
+# How far the map page zooms in. Beyond the highest zoom in TILE_ZOOMS it
+# shows that zoom's tiles, scaled up
+VIEWER_MAX_ZOOM = int(env("VIEWER_MAX_ZOOM", "16"))
 
 LOGGING = {
 	"version": 1,

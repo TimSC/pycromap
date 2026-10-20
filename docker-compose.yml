@@ -1,6 +1,6 @@
 # pycromap with docker compose: the web server, a renderer, and pycromap's own
-# database and tile cache in a volume they share. Fetch the submodules first
-# (git submodule update --init --recursive).
+# database and tile cache in a data/ directory on the host they share. Fetch
+# the submodules first (git submodule update --init --recursive).
 #
 #   docker compose up --build
 #
@@ -38,6 +38,7 @@ x-pycromap: &pycromap
     PYCROCOSM_STATIC_PREFIX: ${PYCROCOSM_STATIC_PREFIX:-planet_static_}
     PYCROCOSM_MODIFY_PREFIX: ${PYCROCOSM_MODIFY_PREFIX:-pycrocosm_mod_}
     MAP_INITIAL_BBOX: ${MAP_INITIAL_BBOX:--1.095,50.795,-1.085,50.8}
+    VIEWER_MAX_ZOOM: ${VIEWER_MAX_ZOOM:-16}
     DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
     TILE_REQUEST_WAIT: ${TILE_REQUEST_WAIT:-600}
     RENDER_TIMEOUT: ${RENDER_TIMEOUT:-600}
@@ -49,7 +50,8 @@ x-pycromap: &pycromap
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
-    - pycromap-data:/data
+    # The database (PYCROMAP_DB) and tile cache (TILE_CACHE_DIR), on the host
+    - ./data:/data
     # The coastline and landcover shapefiles the tilemaker config reads, if
     # downloaded (tilemaker's get-coastline.sh and get-landcover.sh)
     - ${COASTLINE_DIR:-./tilemaker/coastline}:/app/tilemaker/coastline:ro
@@ -77,6 +79,3 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-
-volumes:
-  pycromap-data:

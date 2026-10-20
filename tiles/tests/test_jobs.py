@@ -10,8 +10,9 @@ from tiles import queue
 from tiles.management.commands.render_tiles import render_one
 from tiles.models import TileState
 
-ZOOMS = {12: {"source": "data", "cache": False}, 11: {"source": "summary", "level": 12, "cache": False},
-	10: {"source": "summary", "level": 10, "cache": False}}
+ZOOMS = {12: {"source": "data", "cache": False, "summary": True},
+	11: {"source": "summary", "level": 12, "cache": False},
+	10: {"source": "summary", "level": 10, "cache": False, "summary": True}}
 RENDER = "tiles.management.commands.render_tiles.render_data"
 READ = "tiles.management.commands.render_tiles.read_tile_data"
 

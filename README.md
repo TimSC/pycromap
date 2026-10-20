@@ -15,10 +15,9 @@ A map tile server for a [pycrocosm](https://github.com/TimSC/pycrocosm) map data
 |------|-----------|------|
 | 14, 13 | cut from the z12 tile covering it, scaled up | no |
 | 12 | the map data | as a file, rendered again when asked for after an hour (`max_age`) |
-| 11 | the level-12 summaries beneath it | no |
-| 10, 9 | the level-10 summaries | no |
-| 8, 7 | the level-8 summaries | no |
-| 6 | the level-6 summary | no |
+| 11, 10 | the level-12 summaries beneath it | as a file |
+| 9, 8 | the level-10 summaries beneath it | as a file |
+| 7, 6 | the level-8 summaries beneath it | as a file |
 
 z12 is the highest zoom rendered: the profile gives it everything upstream's profile draws up to z14, so z13 and z14 need no rendering of their own. Cutting a tile from a lower zoom's (`"source": "crop"`) decodes it, scales the part covered up, clips it a little beyond the edge, and encodes it again: quick, without the map data, but no more precise than the tile it came from. The tile it comes from is obtained as a request for it would be.
 
@@ -32,7 +31,7 @@ With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has
 
 ### Summaries
 
-A tile's summary keeps the objects of its area worth drawing at lower zooms, picked by [summaries/summary.lua](summaries/summary.lua), whole, with their geometry simplified. Summaries form a pyramid (`SUMMARY_LEVELS`, 12, 10, 8 and 6). A level-12 summary is built from the map data whenever its z12 tile is rendered, or on its own if one is needed; each coarser level is built from the 16 summaries beneath it, merged (keeping the newest copy of objects found in several), filtered again and simplified more. A tile rendered from summaries merges those beneath it at its zoom's level: z11 the four level-12 summaries, z10 its level-10 summary, z9 the four level-10 summaries beneath it.
+A tile's summary keeps the objects of its area worth drawing at lower zooms, picked by [summaries/summary.lua](summaries/summary.lua), whole, with their geometry simplified. Summaries form a pyramid of the levels `TILE_ZOOMS` marks `summary` (12, 10 and 8). A level-12 summary is built from the map data whenever its z12 tile is rendered, or on its own if one is needed; each coarser level is built from the summaries of the next finer level beneath it, merged (keeping the newest copy of objects found in several), filtered again and simplified more. A tile rendered from summaries merges those beneath it at its zoom's level: z11 and z10 the four level-12 summaries beneath them, z9 the four level-10 summaries beneath it.
 
 Summaries are stored in pycromap's database (`TileSummary`), with the version of the map data they were built from, their format, and a recipe: a hash of `summary.lua` and the settings that shape summaries. Change either, and existing summaries are out of date and built again when needed.
 
@@ -95,7 +94,7 @@ Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per 
 
 ## With Docker
 
-`docker-compose.yml` runs the web server and a renderer, with pycromap's database and tile cache in a volume they share:
+`docker-compose.yml` runs the web server and a renderer, with pycromap's database and tile cache in a `data/` directory on the host they share:
 
     git submodule update --init --recursive
     docker compose up --build
