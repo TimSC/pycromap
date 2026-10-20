@@ -58,7 +58,6 @@ def request_tile(zoom, x, y, rerender):
 		tile.requested_at = now
 		tile.request_count = F("request_count") + 1
 		queued_at = None
-		tile.idle = False
 		if tile.status in (TileState.QUEUED, TileState.RENDERING) and tile.queued_at:
 			# Already on its way: wait for that rendering
 			queued_at = tile.queued_at
@@ -106,14 +105,15 @@ def requeue_abandoned():
 
 def claim_next(worker, idle=True):
 	"""Claims the highest priority queued job for a renderer, or returns None
-	if there is none. Without idle, jobs queued by idle renderers are left: a
-	renderer not working ahead leaves them to wait, until a request takes one
-	over."""
+	if there is none. Without idle, jobs queued by idle renderers are left
+	waiting: theirs have a negative priority, a request's is positive, and a
+	request taking one over makes it positive. A renderer not working ahead
+	leaves the negative ones alone."""
 	while True:
 		ready = Q(not_before__isnull=True) | Q(not_before__lte=timezone.now())
 		jobs = TileState.objects.filter(ready, status=TileState.QUEUED)
 		if not idle:
-			jobs = jobs.filter(idle=False)
+			jobs = jobs.filter(priority__gte=0)
 		candidate = jobs.order_by("-priority", "queued_at").values_list("pk", flat=True).first()
 		if candidate is None:
 			return None
@@ -185,10 +185,10 @@ def queue_summaries(tiles, priority, depth):
 				continue
 			if job.status in (TileState.QUEUED, TileState.RENDERING):
 				TileState.objects.filter(pk=job.pk).update(priority=max(priority, job.priority),
-					depth=min(depth, job.depth), idle=False)
+					depth=min(depth, job.depth))
 				continue
 			TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED, priority=priority,
-				depth=depth, idle=False, queued_at=now, not_before=None, waiting_since=None, attempts=0, error="")
+				depth=depth, queued_at=now, not_before=None, waiting_since=None, attempts=0, error="")
 	return failed
 
 

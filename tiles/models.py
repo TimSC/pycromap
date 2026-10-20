@@ -23,14 +23,15 @@ class TileState(models.Model):
 
 	status = models.CharField(max_length=16, choices=STATUSES, default=QUEUED)
 	# Higher is rendered sooner. For now, the time it was last asked for, so
-	# that the most recently requested tiles come first.
+	# that the most recently requested tiles come first. A request's is when it
+	# came; an idle renderer's is negative (see tiles.idle), so a negative
+	# priority marks an idle job, and a request taking one over makes it
+	# positive.
 	priority = models.FloatField(default=0)
 	# How many summary jobs lie between this job and the request it is for: 0
 	# for a tile, 1 for a summary a tile needs, and so on. Jobs aren't made
 	# deeper than SUMMARY_MAX_DEPTH.
 	depth = models.PositiveSmallIntegerField(default=0)
-	# Queued by an idle renderer, rather than for a request (see tiles.idle)
-	idle = models.BooleanField(default=False)
 	queued_at = models.DateTimeField(null=True, blank=True)
 	# A job waiting for the summaries it needs: since when, and not to be
 	# claimed again before not_before
@@ -47,7 +48,7 @@ class TileState(models.Model):
 	error = models.TextField(blank=True)
 
 	# The last rendering: when, from which version of the map data (the
-	# newest edit_activity ID of the modify layer), how long it took, and the
+	# highest atomic edit ID of the objects it holds), how long it took, and the
 	# tile, gzipped: for a cached zoom, the file it is in, relative to
 	# TILE_CACHE_DIR, and otherwise the tile itself (neither for a tile with
 	# nothing in it)
@@ -67,3 +68,34 @@ class TileState(models.Model):
 
 	def __str__(self):
 		return "{} {}/{}/{} ({})".format(self.kind, self.zoom, self.x, self.y, self.status)
+
+
+class TileSweep(models.Model):
+	"""The idle fleet's progress over the planet, one row per row of tiles.
+
+	At (kind, zoom) the tiles are a 2^zoom by 2^zoom grid; this is row y of it.
+	Idle renderers claim a row and recheck which of its tiles are rendered, so
+	the first gap is what's left to do (see tiles.idle), and the whole planet
+	eventually renders; someone's request for a tile renders it, and the next
+	recheck skips past it.
+	"""
+
+	kind = models.CharField(max_length=16, choices=TileState.KINDS, default=TileState.TILE)
+	zoom = models.PositiveSmallIntegerField()
+	y = models.PositiveIntegerField()
+	# The renderer working the row, and since when (a claim, as for jobs)
+	claimed_by = models.CharField(max_length=100, blank=True)
+	claimed_at = models.DateTimeField(null=True, blank=True)
+	# The row is full: every tile in it is rendered
+	done = models.BooleanField(default=False)
+
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=["kind", "zoom", "y"], name="tilesweep_unique_row"),
+		]
+		indexes = [
+			models.Index(fields=["done", "claimed_by"], name="tilesweep_claim"),
+		]
+
+	def __str__(self):
+		return "sweep {} {}/{}".format(self.kind, self.zoom, self.y)

@@ -13,12 +13,12 @@ from . import queue
 class TileStateAdmin(admin.ModelAdmin):
 	change_list_template = "tilestate_change_list.html"
 	list_display = ("job", "status", "requested", "queued", "waiting", "claimed", "render", "error")
-	list_filter = ("kind", "status", "idle", "zoom")
+	list_filter = ("kind", "status", "zoom")
 	search_fields = ("error",)
 	# The jobs to watch first: rendering, then queued in the order they will
 	# be taken, then failed, then done
 	ordering = ("-status", "-priority", "queued_at")
-	readonly_fields = ("kind", "zoom", "x", "y", "status", "priority", "depth", "idle",
+	readonly_fields = ("kind", "zoom", "x", "y", "status", "priority", "depth",
 		"queued_at", "waiting_since", "not_before", "requested_at", "request_count",
 		"claimed_by", "claimed_at", "attempts", "error", "rendered_at", "data_version",
 		"render_seconds", "file")
@@ -38,7 +38,7 @@ class TileStateAdmin(admin.ModelAdmin):
 		markers = []
 		if tile.depth:
 			markers.append("depth {}".format(tile.depth))
-		if tile.idle:
+		if tile.priority < 0:
 			markers.append("idle")
 		return "{} {}/{}/{}{}".format(tile.kind, tile.zoom, tile.x, tile.y,
 			" ({})".format(", ".join(markers)) if markers else "")
@@ -94,7 +94,7 @@ class TileStateAdmin(admin.ModelAdmin):
 		return [
 			("rendering", by_status.get(TileState.RENDERING, 0)),
 			("queued", by_status.get(TileState.QUEUED, 0)),
-			("idle queued", TileState.objects.filter(status=TileState.QUEUED, idle=True).count()),
+			("idle queued", TileState.objects.filter(status=TileState.QUEUED, priority__lt=0).count()),
 			("failed", by_status.get(TileState.FAILED, 0)),
 			("done", by_status.get(TileState.DONE, 0)),
 		]

@@ -23,8 +23,9 @@ from django.conf import settings
 from django.db import connections, transaction
 
 # The map schema versions whose tables this reader has been checked against.
-# The views have named their columns since 15; 16 added atomic edit IDs.
-SUPPORTED_SCHEMA_VERSIONS = {15, 16}
+# The views have named their columns since 15; 16 added atomic edit IDs,
+# which the reader records as the version of what it reads.
+SUPPORTED_SCHEMA_VERSIONS = {16}
 
 # pgmap's tables for a layer, in the order pgmap locks them (LockMap in
 # pgmap.cpp). Everything using the map database must lock them in this order,
@@ -96,6 +97,7 @@ class AreaReader:
 		self.data = pyo5m.OsmData()
 		self.node_ids = set()
 		self.way_ids = set()
+		self.version = 0
 
 	def check(self):
 		"""Refuses tables this reader doesn't understand."""
@@ -111,13 +113,6 @@ class AreaReader:
 				"AND attname = 'bbox' AND NOT attisdropped", [self.layers.table(prefix, "liveways")])
 			if self.cursor.fetchone()[0] == 0:
 				raise MapDataError("The map does not store way and relation bounding boxes, which reading it needs")
-
-	def data_version(self):
-		"""The newest edit_activity ID of the modify layer: the version of the
-		map data, which tiles built from it record."""
-		self.cursor.execute("SELECT coalesce(max(id), 0) FROM {}".format(
-			self.layers.table(self.layers.modify_prefix, "edit_activity")))
-		return self.cursor.fetchone()[0]
 
 	def read(self, west, south, east, north):
 		box = {"west": west, "south": south, "east": east, "north": north}
@@ -158,35 +153,43 @@ class AreaReader:
 		return self.data
 
 	def read_nodes(self, where, params):
-		self.cursor.execute(self.layers.objects("node", "id, ST_Y(geom), ST_X(geom), tags", where), params)
-		for id, lat, lon, tags in self.cursor.fetchall():
+		self.cursor.execute(self.layers.objects("node", "id, ST_Y(geom), ST_X(geom), tags, atomic_edit_id", where), params)
+		for id, lat, lon, tags, edit in self.cursor.fetchall():
 			if id in self.node_ids:
 				continue
 			self.node_ids.add(id)
 			self.data.nodes.append(pyo5m.Node(id, lat, lon, _tags(tags)))
+			if edit is not None:
+				self.version = max(self.version, edit)
 
 	def read_ways(self, where, params):
-		self.cursor.execute(self.layers.objects("way", "id, tags, members", where), params)
-		for id, tags, members in self.cursor.fetchall():
+		self.cursor.execute(self.layers.objects("way", "id, tags, members, atomic_edit_id", where), params)
+		for id, tags, members, edit in self.cursor.fetchall():
 			if id in self.way_ids:
 				continue
 			self.way_ids.add(id)
 			refs = [int(ref) for ref in _json(members) or []]
 			self.data.ways.append(pyo5m.Way(id, refs, _tags(tags)))
+			if edit is not None:
+				self.version = max(self.version, edit)
 
 	def read_relations(self, where, params):
-		self.cursor.execute(self.layers.objects("relation", "id, tags, members, memberroles", where), params)
-		for id, tags, members, roles in self.cursor.fetchall():
+		self.cursor.execute(self.layers.objects("relation", "id, tags, members, memberroles, atomic_edit_id", where), params)
+		for id, tags, members, roles, edit in self.cursor.fetchall():
 			members = _json(members) or []
 			roles = _json(roles) or []
 			self.data.relations.append(pyo5m.Relation(id, [
 				pyo5m.Member(str(member[0]), int(member[1]), str(roles[i]) if i < len(roles) else "")
 				for i, member in enumerate(members)], _tags(tags)))
+			if edit is not None:
+				self.version = max(self.version, edit)
 
 
 def read_area(west, south, east, north, using="pycrocosm"):
-	"""The map data within the bounds (in degrees), as a pyo5m OsmData, and the
-	version of the map data it is from."""
+	"""The map data within the bounds (in degrees), as a pyo5m OsmData, and
+	the version of the map data it is from: the highest atomic edit ID of the
+	objects it holds, so a new edit only dates the tiles that hold the edited
+	objects."""
 	connection = connections[using]
 	layers = Layers(connection, settings.PYCROCOSM_STATIC_PREFIX, settings.PYCROCOSM_MODIFY_PREFIX)
 	with transaction.atomic(using=using):
@@ -199,6 +202,5 @@ def read_area(west, south, east, north, using="pycrocosm"):
 
 			reader = AreaReader(cursor, layers)
 			reader.check()
-			version = reader.data_version()
 			data = reader.read(west, south, east, north)
-	return data, version
+	return data, reader.version

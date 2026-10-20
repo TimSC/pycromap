@@ -152,7 +152,7 @@ class Command(BaseCommand):
 				wait = poll
 				queue.requeue_abandoned()
 				# Keep idle work queued for the whole fleet
-				if idle_work and idle.queue_idle_work() == 0:
+				if idle_work and idle.queue_idle_work(name) == 0:
 					wait = max(poll, settings.IDLE_POLL)
 				stop.wait(wait)
 		finally:

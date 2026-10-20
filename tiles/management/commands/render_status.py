@@ -66,12 +66,12 @@ class Command(BaseCommand):
 		ready = TileState.objects.filter(Q(status=TileState.QUEUED) &
 			(Q(not_before__isnull=True) | Q(not_before__lte=now)))
 		self.stdout.write("")
-		self.stdout.write("queued: {} ({} idle)".format(ready.count(), ready.filter(idle=True).count()))
+		self.stdout.write("queued: {} ({} idle)".format(ready.count(), ready.filter(priority__lt=0).count()))
 		for job in ready.order_by("-priority", "queued_at")[:lines]:
 			markers = []
 			if job.depth:
 				markers.append("depth {}".format(job.depth))
-			if job.idle:
+			if job.priority < 0:
 				markers.append("idle")
 			self.stdout.write("  " + _row(job, queue.span(job.queued_at), *markers))
 

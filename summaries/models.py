@@ -18,8 +18,8 @@ class TileSummary(models.Model):
 	# summaries (see summaries.build.recipe). One built another way is out of
 	# date, and is built again when needed.
 	recipe = models.CharField(max_length=64, default="")
-	# The version of the map data it was built from (the newest edit_activity
-	# ID of the modify layer), separate from any rendered tile's version
+	# The version of the map data it was built from (the highest atomic edit
+	# ID of the objects it holds), separate from any rendered tile's version
 	version = models.BigIntegerField()
 	built_at = models.DateTimeField()
 
