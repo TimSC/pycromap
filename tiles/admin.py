@@ -4,23 +4,9 @@ changed or deleted."""
 
 from django.contrib import admin
 from django.db.models import Count
-from django.utils import timezone
 
 from .models import TileState
-
-
-def _span(moment):
-	"""A moment as a span from now: '42s ago', '4m ago', 'in 30s'."""
-	if moment is None:
-		return ""
-	seconds = (moment - timezone.now()).total_seconds()
-	sign = "in" if seconds >= 0 else "ago"
-	seconds = abs(seconds)
-	if seconds < 90:
-		return "{}{}s".format(int(seconds), sign)
-	if seconds < 90 * 60:
-		return "{}{}m".format(int(seconds // 60), sign)
-	return "{}{}h".format(int(seconds // (60 * 60)), sign)
+from . import queue
 
 
 @admin.register(TileState)
@@ -61,11 +47,11 @@ class TileStateAdmin(admin.ModelAdmin):
 	def requested(self, tile):
 		if not tile.request_count:
 			return ""
-		return "{}x {}".format(tile.request_count, _span(tile.requested_at))
+		return "{}x {}".format(tile.request_count, queue.span(tile.requested_at))
 
 	@admin.display(description="queued")
 	def queued(self, tile):
-		return _span(tile.queued_at)
+		return queue.span(tile.queued_at)
 
 	@admin.display(description="waiting")
 	def waiting(self, tile):
@@ -73,14 +59,14 @@ class TileStateAdmin(admin.ModelAdmin):
 		# waited, and when it may be claimed again
 		if tile.waiting_since is None:
 			return ""
-		again = " " + _span(tile.not_before) if tile.not_before else ""
-		return "{} {}".format(_span(tile.waiting_since), again).strip()
+		again = " " + queue.span(tile.not_before) if tile.not_before else ""
+		return "{} {}".format(queue.span(tile.waiting_since), again).strip()
 
 	@admin.display(description="claimed")
 	def claimed(self, tile):
 		if not tile.claimed_by:
 			return ""
-		return "{} {}".format(tile.claimed_by, _span(tile.claimed_at)).strip()
+		return "{} {}".format(tile.claimed_by, queue.span(tile.claimed_at)).strip()
 
 	@admin.display(description="render")
 	def render(self, tile):

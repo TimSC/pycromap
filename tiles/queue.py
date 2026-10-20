@@ -24,6 +24,20 @@ def zoom_config(zoom):
 	return settings.TILE_ZOOMS.get(zoom)
 
 
+def span(moment):
+	"""A moment as a span from now: '42s ago', '4m ago', 'in 30s'."""
+	if moment is None:
+		return ""
+	seconds = (moment - timezone.now()).total_seconds()
+	sign = "in" if seconds >= 0 else "ago"
+	seconds = abs(seconds)
+	if seconds < 90:
+		return "{}s {}".format(int(seconds), sign)
+	if seconds < 90 * 60:
+		return "{}m {}".format(int(seconds // 60), sign)
+	return "{}h {}".format(int(seconds // (60 * 60)), sign)
+
+
 def tile_file(zoom, x, y, version):
 	"""Where a cached zoom's rendering of a tile goes, relative to
 	TILE_CACHE_DIR: a gzipped vector tile. The data version is in the name, so
