@@ -247,8 +247,10 @@ z10RoadValues = Set { "primary_link", "secondary_link" }
 z11RoadValues = Set { "tertiary", "tertiary_link", "busway", "bus_guideway" }
 -- On zoom 12, various road classes are merged into "minor"
 z12MinorRoadValues = Set { "unclassified", "residential", "road", "living_street" }
-z12OtherRoadValues = Set { "raceway" }
-z13RoadValues     = Set { "track", "service" }
+-- This map's tiles start at z12, so what upstream draws only from z13 and z14
+-- (tracks, services, and the path classes) comes in at z12 as well
+z12OtherRoadValues = Set { "raceway", "track", "service" }
+z13RoadValues     = Set {}
 manMadeRoadValues = Set { "pier", "bridge" }
 pathValues      = Set { "footway", "cycleway", "bridleway", "path", "steps", "pedestrian", "platform" }
 linkValues      = Set { "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link" }
@@ -367,6 +369,7 @@ function write_to_transportation_layer(minzoom, highway_class, subclass, ramp, s
 	if (is_rail or highway_class == "service") and (service and service ~="") then Attribute("service", service) end
 
 	if is_road then
+		if Holds("designation") then Attribute("designation", Find("designation"), 12) end
 		local oneway = Find("oneway")
 		if oneway == "yes" or oneway == "1" then
 			AttributeInteger("oneway",1)
@@ -527,7 +530,7 @@ function way_function()
 		elseif z12MinorRoadValues[h] then minzoom = 12
 		elseif z12OtherRoadValues[h] then minzoom = 12
 		elseif z13RoadValues[h]      then minzoom = 13
-		elseif pathValues[h]         then minzoom = 14
+		elseif pathValues[h]         then minzoom = 12
 		end
 		
 		if z12MinorRoadValues[h] then
