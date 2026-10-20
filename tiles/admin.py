@@ -1,12 +1,114 @@
+"""The admin: the state of the jobs in the render queue, and the stored
+summaries. The renderers own the jobs, so nothing there may be added,
+changed or deleted."""
+
 from django.contrib import admin
+from django.db.models import Count
+from django.utils import timezone
 
 from .models import TileState
 
 
+def _span(moment):
+	"""A moment as a span from now: '42s ago', '4m ago', 'in 30s'."""
+	if moment is None:
+		return ""
+	seconds = (moment - timezone.now()).total_seconds()
+	sign = "in" if seconds >= 0 else "ago"
+	seconds = abs(seconds)
+	if seconds < 90:
+		return "{}{}s".format(int(seconds), sign)
+	if seconds < 90 * 60:
+		return "{}{}m".format(int(seconds // 60), sign)
+	return "{}{}h".format(int(seconds // (60 * 60)), sign)
+
+
 @admin.register(TileState)
 class TileStateAdmin(admin.ModelAdmin):
-	list_display = ("kind", "zoom", "x", "y", "status", "requested_at", "request_count",
-		"rendered_at", "data_version", "render_seconds", "attempts")
+	change_list_template = "tilestate_change_list.html"
+	list_display = ("job", "status", "requested", "queued", "waiting", "claimed", "render", "error")
 	list_filter = ("kind", "status", "idle", "zoom")
 	search_fields = ("error",)
-	ordering = ("-requested_at",)
+	# The jobs to watch first: rendering, then queued in the order they will
+	# be taken, then failed, then done
+	ordering = ("-status", "-priority", "queued_at")
+	readonly_fields = ("kind", "zoom", "x", "y", "status", "priority", "depth", "idle",
+		"queued_at", "waiting_since", "not_before", "requested_at", "request_count",
+		"claimed_by", "claimed_at", "attempts", "error", "rendered_at", "data_version",
+		"render_seconds", "file")
+	fields = readonly_fields
+	actions = None
+
+	def has_add_permission(self, request):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
+
+	# The columns
+
+	@admin.display(description="job")
+	def job(self, tile):
+		markers = []
+		if tile.depth:
+			markers.append("depth {}".format(tile.depth))
+		if tile.idle:
+			markers.append("idle")
+		return "{} {}/{}/{}{}".format(tile.kind, tile.zoom, tile.x, tile.y,
+			" ({})".format(", ".join(markers)) if markers else "")
+
+	@admin.display(description="requested")
+	def requested(self, tile):
+		if not tile.request_count:
+			return ""
+		return "{}x {}".format(tile.request_count, _span(tile.requested_at))
+
+	@admin.display(description="queued")
+	def queued(self, tile):
+		return _span(tile.queued_at)
+
+	@admin.display(description="waiting")
+	def waiting(self, tile):
+		# A job stepped back for the summaries it needs: how long it has
+		# waited, and when it may be claimed again
+		if tile.waiting_since is None:
+			return ""
+		again = " " + _span(tile.not_before) if tile.not_before else ""
+		return "{} {}".format(_span(tile.waiting_since), again).strip()
+
+	@admin.display(description="claimed")
+	def claimed(self, tile):
+		if not tile.claimed_by:
+			return ""
+		return "{} {}".format(tile.claimed_by, _span(tile.claimed_at)).strip()
+
+	@admin.display(description="render")
+	def render(self, tile):
+		parts = []
+		if tile.render_seconds is not None:
+			parts.append("{:.2f}s".format(tile.render_seconds))
+		if tile.data_version is not None:
+			parts.append("v{}".format(tile.data_version))
+		if tile.file:
+			parts.append("file")
+		if tile.attempts and tile.status == TileState.FAILED:
+			parts.append("{} tries".format(tile.attempts))
+		return " ".join(parts)
+
+	# The summary above the list
+
+	def changelist_view(self, request, extra_context=None):
+		extra_context = {**(extra_context or {}), "job_counts": self._counts()}
+		return super().changelist_view(request, extra_context=extra_context)
+
+	@staticmethod
+	def _counts():
+		by_status = {row["status"]: row["n"] for row in
+			TileState.objects.values("status").annotate(n=Count("pk"))}
+		return [
+			("rendering", by_status.get(TileState.RENDERING, 0)),
+			("queued", by_status.get(TileState.QUEUED, 0)),
+			("idle queued", TileState.objects.filter(status=TileState.QUEUED, idle=True).count()),
+			("failed", by_status.get(TileState.FAILED, 0)),
+			("done", by_status.get(TileState.DONE, 0)),
+		]
