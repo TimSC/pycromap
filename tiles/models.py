@@ -74,10 +74,10 @@ class TileSweep(models.Model):
 	"""The idle fleet's progress over the planet, one row per row of tiles.
 
 	At (kind, zoom) the tiles are a 2^zoom by 2^zoom grid; this is row y of it.
-	Idle renderers claim a row and recheck which of its tiles are rendered, so
-	the first gap is what's left to do (see tiles.idle), and the whole planet
-	eventually renders; someone's request for a tile renders it, and the next
-	recheck skips past it.
+	A renderer claims a row and rechecks which of its tiles are rendered, so
+	the first gap is what's left to do (see tiles.idle); the row stays claimed
+	while it has gaps, and is released, with a timestamp, once every tile in
+	it is rendered.
 	"""
 
 	kind = models.CharField(max_length=16, choices=TileState.KINDS, default=TileState.TILE)
@@ -86,15 +86,15 @@ class TileSweep(models.Model):
 	# The renderer working the row, and since when (a claim, as for jobs)
 	claimed_by = models.CharField(max_length=100, blank=True)
 	claimed_at = models.DateTimeField(null=True, blank=True)
-	# The row is full: every tile in it is rendered
-	done = models.BooleanField(default=False)
+	# When every tile in the row was last verified rendered
+	last_checked = models.DateTimeField(null=True, blank=True)
 
 	class Meta:
 		constraints = [
 			models.UniqueConstraint(fields=["kind", "zoom", "y"], name="tilesweep_unique_row"),
 		]
 		indexes = [
-			models.Index(fields=["done", "claimed_by"], name="tilesweep_claim"),
+			models.Index(fields=["claimed_by", "last_checked"], name="tilesweep_claim"),
 		]
 
 	def __str__(self):

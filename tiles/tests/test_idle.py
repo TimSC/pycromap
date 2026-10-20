@@ -95,10 +95,11 @@ class SweepTests(TestCase):
 		# The frontier of row 0 moves on to the next unrendered tile
 		self.assertIn((TileState.TILE, 4, 0, 1), planned)
 
-	def test_a_row_is_not_done_until_it_is_full(self):
+	def test_a_row_stays_claimed_until_it_is_full(self):
 		idle.plan(1, "w")
 		row = TileSweep.objects.get(kind=TileState.TILE, zoom=4, y=0)
-		self.assertFalse(row.done)
+		self.assertIsNone(row.last_checked)  # not yet verified
+		self.assertEqual(row.claimed_by, "w")  # stays claimed while it has gaps
 
 	def test_the_sweep_skips_uncached_zooms(self):
 		request(4, 8, 8)
@@ -123,12 +124,13 @@ class ClaimTests(TestCase):
 	def test_a_claimed_row_is_claimed_again(self):
 		idle.plan(1, "w1")
 		row = TileSweep.objects.filter(kind=TileState.TILE, zoom=4, y=0).first()
-		# A renderer that went quiet: its row is given back
+		# A renderer that went quiet: its row is given back, and a new
+		# renderer claims it (and keeps it, as the row has gaps)
 		row.claimed_by, row.claimed_at = "dead", timezone.now() - timedelta(hours=1)
 		row.save()
 		self.assertEqual(idle.reclaim_sweeps(), 1)
 		idle.plan(1, "w2")
-		self.assertEqual(TileSweep.objects.get(pk=row.pk).claimed_by, "")
+		self.assertEqual(TileSweep.objects.get(pk=row.pk).claimed_by, "w2")
 
 	def test_idle_jobs_are_left_unless_working_ahead(self):
 		request(4, 8, 8)

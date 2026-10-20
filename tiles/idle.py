@@ -21,7 +21,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Case, Q, When
 from django.utils import timezone
 
 from summaries import build as summaries
@@ -149,35 +149,39 @@ def _ensure_sweep_rows(kind, zoom):
 
 
 def _frontiers(limit, rank, kind, zoom, worker):
-	"""Up to limit tiles from the front of (kind, zoom): the first unrendered
-	tiles, left to right, top to bottom, with the rank. The rows they are in
-	are claimed for the check, as for jobs, so any number of renderers can
-	work the rows of a zoom at once. Which tiles are rendered is rechecked on
-	the claim, so a tile that has rendered (by a request or another renderer)
-	is never planned again, whatever held it up (a missing summary, a failed
-	attempt, a renderer that died). A row is done only when every tile in it
-	is rendered, so a zoom nobody has touched keeps its rows open, ready for
-	the sweep."""
+	"""Up to limit tiles from the front of (kind, zoom), with the rank: the
+	first unrendered tiles, left to right, top to bottom. The worker's own
+	rows come first (it is working them), then new rows. A row stays claimed
+	while it has gaps, so other renderers don't waste a check on it; it is
+	released, with a timestamp, once every tile in it is rendered."""
 	_ensure_sweep_rows(kind, zoom)
-	rows = list(TileSweep.objects.filter(kind=kind, zoom=zoom, done=False, claimed_by="")
-		.order_by("y").values_list("pk", "y")[:limit])
-	claimed = []
-	for pk, y in rows:
-		if TileSweep.objects.filter(pk=pk, done=False, claimed_by="").update(
-				claimed_by=worker, claimed_at=timezone.now()):
-			claimed.append(y)
+	rows_qs = TileSweep.objects.filter(
+		Q(kind=kind, zoom=zoom) & (Q(claimed_by=worker) | Q(claimed_by="", last_checked__isnull=True)))
+	rows = list(rows_qs.order_by(
+		Case(When(claimed_by=worker, then=0), default=1), "y"
+	).values_list("pk", "y")[:limit])
 	frontiers = []
 	n = 1 << zoom
-	for y in claimed:
+	now = timezone.now()
+	for pk, y in rows:
+		# Claim new rows (a compare-and-set, as for jobs); own rows are
+		# already claimed, and a race loses to the other renderer
+		if not TileSweep.objects.filter(pk=pk, claimed_by="", last_checked__isnull=True).update(
+				claimed_by=worker, claimed_at=now):
+			if not TileSweep.objects.filter(pk=pk, claimed_by=worker).exists():
+				continue
+		# The first gap in the row is what's left to do
 		rendered = set(_rendered_x(kind, zoom, y))
 		x = 0
-		while x in rendered:
+		while x < n and x in rendered:
 			x += 1
 		if x < n:
 			frontiers.append((y, x))
+		else:
+			# Every tile is rendered: release the row, with a timestamp
+			TileSweep.objects.filter(pk=pk).update(last_checked=now,
+				claimed_by="", claimed_at=None)
 	frontiers.sort()
-	for y in claimed:
-		TileSweep.objects.filter(y=y, claimed_by=worker).update(claimed_by="", claimed_at=None)
 	return [(rank, kind, zoom, x, y) for y, x in frontiers[:limit]]
 
 
