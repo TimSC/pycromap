@@ -231,8 +231,9 @@ TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 # docker-compose.yml).
 TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
-# Rendering threads in each render_tiles process
-RENDER_WORKERS = int(env("RENDER_WORKERS", "16"))
+# How many render_tiles processes to run: each renders one job at a time
+# (rendering is CPU-bound, and threads in one process share the GIL)
+RENDER_WORKERS = int(env("RENDER_WORKERS", "8"))
 # Whether idle renderers work ahead: on summaries, and tiles of cached zooms,
 # that nobody has asked for yet, highest zooms first, then nearest the
 # IDLE_SEEDS most recently requested tiles, within IDLE_RADIUS tiles of them

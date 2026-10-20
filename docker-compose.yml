@@ -1,8 +1,11 @@
-# pycromap with docker compose: the web server, a renderer, and pycromap's own
+# pycromap with docker compose: the web server, renderers, and pycromap's own
 # database and tile cache in a data/ directory on the host they share. Fetch
 # the submodules first (git submodule update --init --recursive).
 #
 #   docker compose up --build
+#
+# The renderer runs RENDER_WORKERS (8) render_tiles processes, restarting
+# any that die (manage.py render_fleet):
 #
 # The map is then at http://localhost:8082/ (PYCROMAP_PORT to change it).
 #
@@ -75,7 +78,7 @@ services:
 
   renderer:
     <<: *pycromap
-    command: ["python", "manage.py", "render_tiles", "--workers", "${RENDER_WORKERS:-16}"]
+    command: ["python", "manage.py", "render_fleet"]
     depends_on:
       migrate:
         condition: service_completed_successfully

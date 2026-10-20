@@ -1,18 +1,18 @@
 """Renders queued tiles and builds queued summaries, highest priority first,
 until stopped.
 
-Each worker thread claims a job: a tile from map data (reading it, building
-its summary at the base level, and running tilemaker-core), a tile from
-summaries, or a summary. The work happens in tilemaker and the databases, so
-threads are enough to render several tiles at once; run more processes to
-render more.
+The process claims jobs one at a time: a tile from map data (reading it,
+building its summary if the zoom marks one, and running tilemaker-core), a
+tile from summaries, or a summary. The work is CPU-bound Python, and threads
+in one process share the interpreter's lock, so one process renders one job
+at a time: run `RENDER_WORKERS` (8) of them to render more.
 """
 
 import logging
 import os
 import signal
 import socket
-import threading
+import threading  # for the stop event, nothing else
 import time
 
 from django.conf import settings
@@ -95,11 +95,11 @@ def build_summary_job(job):
 	return summaries.load(job.zoom, job.x, job.y)[1]
 
 
-def render_one(worker):
+def render_one(process):
 	"""Does the next queued job, if there is one. Returns whether there was.
 	Jobs queued by idle renderers are done only when working ahead
 	(RENDER_IDLE_WORK)."""
-	job = queue.claim_next(worker, idle=settings.RENDER_IDLE_WORK)
+	job = queue.claim_next(process, idle=settings.RENDER_IDLE_WORK)
 	if job is None:
 		return False
 	name = "{} {}/{}/{}".format(job.kind, job.zoom, job.x, job.y)
@@ -127,48 +127,34 @@ class Command(BaseCommand):
 	help = "Renders queued tiles, highest priority first, until stopped"
 
 	def add_arguments(self, parser):
-		parser.add_argument("--workers", type=int, default=settings.RENDER_WORKERS,
-			help="tiles rendered at once (default %(default)s)")
 		parser.add_argument("--poll", type=float, default=0.2,
 			help="seconds between looks at an empty queue (default %(default)s)")
 		parser.add_argument("--once", action="store_true",
 			help="stop when the queue is empty, rather than waiting for more")
 
-	def handle(self, *args, workers, poll, once, **options):
+	def handle(self, *args, poll, once, **options):
 		stop = threading.Event()
 		for sig in (signal.SIGINT, signal.SIGTERM):
 			signal.signal(sig, lambda *_: stop.set())
 
 		name = "{}:{}".format(socket.gethostname(), os.getpid())
 		queue.requeue_abandoned()
-
 		idle_work = settings.RENDER_IDLE_WORK and not once
-
-		def work(number):
-			worker = "{}:{}".format(name, number)
-			try:
-				while not stop.is_set():
-					close_old_connections()
-					if render_one(worker):
-						continue
-					if once:
-						return
-					wait = poll
-					if number == 0:
-						queue.requeue_abandoned()
-						# One worker plans idle work, for them all
-						if idle_work and idle.queue_idle_work(workers) == 0:
-							wait = max(poll, settings.IDLE_POLL)
-					stop.wait(wait)
-			finally:
-				connections.close_all()
-
-		threads = [threading.Thread(target=work, args=(n,), daemon=True) for n in range(workers)]
-		for thread in threads:
-			thread.start()
-		self.stdout.write("Rendering with {} workers{}".format(workers,
+		self.stdout.write("Rendering as {}{}".format(name,
 			", working ahead when idle" if idle_work else ""))
-		while any(t.is_alive() for t in threads):
-			for thread in threads:
-				thread.join(0.5)
+		try:
+			while not stop.is_set():
+				close_old_connections()
+				if render_one(name):
+					continue
+				if once:
+					break
+				wait = poll
+				queue.requeue_abandoned()
+				# Plan this process's share of the idle work
+				if idle_work and idle.queue_idle_work(1) == 0:
+					wait = max(poll, settings.IDLE_POLL)
+				stop.wait(wait)
+		finally:
+			connections.close_all()
 		self.stdout.write("Stopped")

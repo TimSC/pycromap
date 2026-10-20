@@ -27,7 +27,7 @@ z12 is the highest zoom rendered: the profile gives it everything upstream's pro
 
 ### Working ahead
 
-With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest a requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. One worker in each renderer plans, keeping as many jobs queued as there are workers, below every request. A request for something queued ahead takes the job over. With it off, renderers leave jobs queued ahead alone.
+With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest a requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. Each renderer plans, keeping one job queued, below every request. A request for something queued ahead takes the job over. With it off, renderers leave jobs queued ahead alone.
 
 ### Summaries
 
@@ -72,14 +72,14 @@ Copy `.env.example` to `.env` and give it the pycrocosm database's details, then
 
 ## Running
 
-Run the web server and, alongside it, at least one renderer:
+Run the web server and, alongside it, the renderer fleet: `RENDER_WORKERS` (8) renderers, each in its own process (rendering is CPU-bound, so more threads in one process would not help), supervised and replaced by `render_fleet` if they die:
 
     venv/bin/python manage.py runserver
-    venv/bin/python manage.py render_tiles
+    venv/bin/python manage.py render_fleet
 
 The map is at http://localhost:8000/. Tile states can be seen in the admin, at `/admin/` (`manage.py createsuperuser` first).
 
-Each renderer process works on `--workers` jobs at once (`RENDER_WORKERS`, 16); run more processes to do more. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
+Each renderer renders one job at a time; `RENDER_WORKERS` (8) of them, in separate processes, render that many at once. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
 
 Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per tile, named with the data version they came from (`{z}/{x}/{y}.{version}.pbf.gz`); a newer version replaces the older. Other zooms keep only each tile's latest rendering, in the database. In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`, saying the files are gzipped vector tiles; with `DEBUG` on, Django does. With nginx:
 
@@ -94,7 +94,7 @@ Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per 
 
 ## With Docker
 
-`docker-compose.yml` runs the web server and a renderer, with pycromap's database and tile cache in a `data/` directory on the host they share:
+`docker-compose.yml` runs the web server and renderers, with pycromap's database and tile cache in a `data/` directory on the host they share:
 
     git submodule update --init --recursive
     docker compose up --build
