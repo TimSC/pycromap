@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from mapdata.reader import LOCKED_TABLES, Layers
+from mapdata.reader import LOCKED_TABLES, Layers, needs_whole
 
 
 class FakeOps:
@@ -30,3 +30,16 @@ class LayerTests(SimpleTestCase):
 		layers = Layers(FakeConnection(), "", "mod_")
 		self.assertEqual(layers.prefixes(), ["mod_"])
 		self.assertEqual(layers.objects("node", "id", "true"), 'SELECT id FROM "mod_visiblenodes" WHERE true')
+
+
+class NeedsWholeTests(SimpleTestCase):
+	def test_areas_are_read_whole(self):
+		for tags in ({"natural": "water"}, {"landuse": "forest", "name": "Big Wood"}, {"place": "island"},
+				{"boundary": "national_park"}, {"boundary": "protected_area"}, {"type": "multipolygon"},
+				{"boundary": "administrative", "admin_level": "8", "place": "island"}):
+			self.assertTrue(needs_whole(tags), tags)
+
+	def test_boundaries_alone_are_not(self):
+		for tags in ({"boundary": "administrative", "admin_level": "2", "name": "United States of America",
+				"maritime": "yes"}, {"boundary": "postal_code", "postal_code": "PO1"}):
+			self.assertFalse(needs_whole(tags), tags)
