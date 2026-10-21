@@ -1,12 +1,15 @@
+import gzip
 import tempfile
 from datetime import timedelta
 from pathlib import Path
 
-from django.test import TestCase, override_settings
+import mapbox_vector_tile
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from tiles import queue
 from tiles.models import TileState
+from tiles.render import shared_kind
 
 
 class QueueTests(TestCase):
@@ -70,11 +73,31 @@ class QueueTests(TestCase):
 			self.assertEqual((tile.file, bytes(tile.data)), ("", b"tile"))
 			self.assertEqual(list(Path(cache).iterdir()), [])
 
-	def test_empty_tile_has_neither(self):
+	def test_uncached_empty_tile_has_neither(self):
 		queue.request_tile(13, 1, 2, rerender=True)
-		queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=True)
+		queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=False)
 		tile = TileState.objects.get()
 		self.assertEqual((tile.file, tile.data), ("", None))
+
+	def test_tiles_the_same_as_many_share_a_file(self):
+		sea = vector_tile([{"geometry": "POLYGON ((-64 -64, 4160 -64, 4160 4160, -64 4160, -64 -64))",
+			"properties": {"class": "ocean"}}], "water")
+		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
+			for x, data in ((1, sea), (2, gzip.compress(gzip.decompress(sea))), (3, b""), (4, b"")):
+				queue.request_tile(12, x, 2, rerender=True)
+				queue.finish(queue.claim_next("a"), data, 7, 0.5, cached=True)
+			files = dict(TileState.objects.values_list("x", "file"))
+			# Sea twice, gzipped at different times: one file; empty: another
+			self.assertEqual(files[1], files[2])
+			self.assertEqual(files[3], files[4])
+			self.assertNotEqual(files[1], files[3])
+			self.assertTrue(all(f.startswith("shared/") for f in files.values()))
+			self.assertEqual(gzip.decompress((Path(cache) / files[1]).read_bytes()), gzip.decompress(sea))
+			self.assertEqual(gzip.decompress((Path(cache) / files[3]).read_bytes()), b"")
+			# A tile that changes from sea to its own content leaves the shared file
+			queue.request_tile(12, 1, 2, rerender=True)
+			queue.finish(queue.claim_next("a"), b"tile", 8, 0.5, cached=True)
+			self.assertTrue((Path(cache) / files[2]).exists())
 
 	@override_settings(RENDER_LEASE=60)
 	def test_abandoned_claims_are_requeued(self):
@@ -84,3 +107,24 @@ class QueueTests(TestCase):
 		TileState.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
 		self.assertEqual(queue.requeue_abandoned(), 1)
 		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+
+
+def vector_tile(features, layer="water"):
+	return gzip.compress(mapbox_vector_tile.encode([{"name": layer, "features": features, "extent": 4096}],
+		default_options={"y_coord_down": True, "extents": 4096}))
+
+
+class SharedKindTests(SimpleTestCase):
+	whole = "POLYGON ((-64 -64, 4160 -64, 4160 4160, -64 4160, -64 -64))"
+
+	def test_kinds(self):
+		self.assertEqual(shared_kind(b""), "empty")
+		self.assertEqual(shared_kind(vector_tile([])), "empty")
+		self.assertEqual(shared_kind(vector_tile([{"geometry": self.whole, "properties": {"class": "ocean"}}])), "uniform")
+		# Not the whole tile, more than one thing, or not a tile
+		self.assertIsNone(shared_kind(vector_tile([{"geometry": "POLYGON ((0 0, 2000 0, 2000 4096, 0 4096, 0 0))",
+			"properties": {}}])))
+		self.assertIsNone(shared_kind(vector_tile([{"geometry": self.whole, "properties": {}},
+			{"geometry": "POINT (10 10)", "properties": {"name": "buoy"}}])))
+		self.assertIsNone(shared_kind(vector_tile([{"geometry": "LINESTRING (0 0, 4096 4096)", "properties": {}}])))
+		self.assertIsNone(shared_kind(b"tile"))

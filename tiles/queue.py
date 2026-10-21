@@ -7,6 +7,8 @@ they are built. A claim is a compare-and-set update,
 so any number of renderers can share the queue, even on SQLite.
 """
 
+import gzip
+import hashlib
 import os
 import time
 from datetime import timedelta
@@ -17,6 +19,11 @@ from django.db.models import F, Q
 from django.utils import timezone
 
 from .models import TileState
+from .render import shared_kind
+
+# Where tiles that many others are the same as (see render.shared_kind) are
+# kept, under TILE_CACHE_DIR: one file for each content, named by its hash
+SHARED_DIR = "shared"
 
 
 def zoom_config(zoom):
@@ -43,6 +50,21 @@ def tile_file(zoom, x, y, version):
 	TILE_CACHE_DIR: a gzipped vector tile. The data version is in the name, so
 	a newer rendering never changes a file that is being served."""
 	return os.path.join(str(zoom), str(x), "{}.{}.pbf.gz".format(y, version))
+
+
+def shared_file(raw):
+	"""Where the shared file of a tile's content (not gzipped) goes, relative
+	to TILE_CACHE_DIR."""
+	return os.path.join(SHARED_DIR, "{}.pbf.gz".format(hashlib.sha256(raw).hexdigest()[:32]))
+
+
+def _write(path, data):
+	full = os.path.join(settings.TILE_CACHE_DIR, path)
+	os.makedirs(os.path.dirname(full), exist_ok=True)
+	temporary = full + ".tmp{}".format(os.getpid())
+	with open(temporary, "wb") as f:
+		f.write(data)
+	os.replace(temporary, full)
 
 
 def request_tile(zoom, x, y, rerender):
@@ -124,23 +146,28 @@ def claim_next(worker, idle=True):
 def finish(tile, data, version, seconds, cached):
 	"""Records a rendering of a tile (gzipped). A cached zoom's tile is written
 	to TILE_CACHE_DIR, replacing its last file; any other's is kept with its
-	state, for the requests waiting for it."""
+	state, for the requests waiting for it. A cached tile that is the same as
+	many others, empty or all sea say (see render.shared_kind), shares one
+	file with every tile of the same content, so the ocean is one file, and
+	one download for a browser, not millions."""
 	fields = {"status": TileState.DONE, "rendered_at": timezone.now(), "data_version": version,
 		"render_seconds": seconds, "error": "", "claimed_by": "", "claimed_at": None,
 		"not_before": None, "waiting_since": None, "file": "", "data": None}
 	previous = TileState.objects.filter(pk=tile.pk).values_list("file", flat=True).first()
-	if data and cached:
+	if cached and shared_kind(data):
+		raw = gzip.decompress(data) if data[:2] == b"\x1f\x8b" else data
+		fields["file"] = shared_file(raw)
+		if not os.path.exists(os.path.join(settings.TILE_CACHE_DIR, fields["file"])):
+			# The same bytes whoever writes it: gzip's time left out
+			_write(fields["file"], gzip.compress(raw, mtime=0))
+	elif data and cached:
 		fields["file"] = tile_file(tile.zoom, tile.x, tile.y, version)
-		full = os.path.join(settings.TILE_CACHE_DIR, fields["file"])
-		os.makedirs(os.path.dirname(full), exist_ok=True)
-		temporary = full + ".tmp{}".format(os.getpid())
-		with open(temporary, "wb") as f:
-			f.write(data)
-		os.replace(temporary, full)
+		_write(fields["file"], data)
 	elif data:
 		fields["data"] = data
 	TileState.objects.filter(pk=tile.pk).update(**fields)
-	if previous and previous != fields["file"]:
+	# The last file goes, unless shared: other tiles may still be using it
+	if previous and previous != fields["file"] and not previous.startswith(SHARED_DIR + os.sep):
 		try:
 			os.remove(os.path.join(settings.TILE_CACHE_DIR, previous))
 		except FileNotFoundError:

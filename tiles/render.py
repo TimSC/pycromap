@@ -6,8 +6,10 @@ import os
 import subprocess
 import tempfile
 
+import mapbox_vector_tile
 import pyo5m
 from django.conf import settings
+from shapely.geometry import box, shape
 
 from mapdata.reader import read_area
 
@@ -20,14 +22,32 @@ class RenderError(Exception):
 	pass
 
 
-# A tile over open sea, with nothing but the ocean rectangle tilemaker adds
-# from its coastline shapefile. The same bytes for every such tile, so none
-# are stored on disk; the view serves this when a tile was rendered empty.
-EMPTY_TILE = bytes.fromhex(
-	"1f8b08000000000000039332ad60e2622d4f2c492dd26850"
-	"1012976056e2e7d45ce120c570d1e1920303c325077e2126"
-	"060629d6e49cc4e26225762ed6fce4d4c43c0055b1214d37"
-	"000000")
+def shared_kind(tile):
+	"""What a rendered tile (gzipped or not) is, if it is the same as many
+	others are: "empty", with nothing drawn, as over land with nothing mapped,
+	or "uniform", one feature covering the whole of it, as over open sea. None
+	for anything else, or what can't be read as a vector tile. Tiles of a
+	kind with the same content can share one file (see queue.finish)."""
+	if not tile:
+		return "empty"
+	try:
+		raw = gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile
+		layers = mapbox_vector_tile.decode(raw, default_options={"y_coord_down": True})
+	except Exception:
+		return None
+	features = [(layer["extent"], f) for layer in layers.values() for f in layer["features"]]
+	if not features:
+		return "empty"
+	if len(features) != 1:
+		return None
+	extent, feature = features[0]
+	try:
+		geometry = shape(feature["geometry"])
+		if geometry.geom_type in ("Polygon", "MultiPolygon") and geometry.covers(box(0, 0, extent, extent)):
+			return "uniform"
+	except Exception:
+		pass
+	return None
 
 
 def run_tilemaker(input_path, zoom, x, y, output_dir):

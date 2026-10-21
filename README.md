@@ -81,7 +81,7 @@ The map is at http://localhost:8000/. Tile states can be seen in the admin, at `
 
 Each renderer renders one job at a time; `RENDER_WORKERS` (8) of them, in separate processes, render that many at once. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
 
-Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per tile, named with the data version they came from (`{z}/{x}/{y}.{version}.pbf.gz`); a newer version replaces the older. Other zooms keep only each tile's latest rendering, in the database. In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`, saying the files are gzipped vector tiles; with `DEBUG` on, Django does. With nginx:
+Tiles are gzipped. A cached zoom's tiles are files in `TILE_CACHE_DIR`, one per tile, named with the data version they came from (`{z}/{x}/{y}.{version}.pbf.gz`); a newer version replaces the older. Every tile is rendered by tilemaker-core, and what comes out is then looked at: a tile with nothing drawn (land with nothing mapped) or with one feature covering all of it (open sea) is the same as a great many others, so it shares one file, `shared/{hash}.pbf.gz`, named by its content, with every tile like it. The ocean is then one file, which a browser fetches once, rather than one for each tile. Other zooms keep only each tile's latest rendering, in the database. In production, have the web server serve `TILE_CACHE_DIR` at `TILE_CACHE_URL`, saying the files are gzipped vector tiles; with `DEBUG` on, Django does. With nginx:
 
     location /tilecache/ {
         alias /path/to/tilecache/;
