@@ -291,6 +291,14 @@ poiTags         = { aerialway = Set { "station" },
 					tourism = Set { "alpine_hut", "aquarium", "artwork", "attraction", "bed_and_breakfast", "camp_site", "caravan_site", "chalet", "gallery", "guest_house", "hostel", "hotel", "information", "motel", "museum", "picnic_site", "theme_park", "viewpoint", "zoo" },
 					waterway = Set { "dock" } }
 
+-- The keys of poiTags in the order they are tried: the first an object has
+-- decides its class. pairs() would visit them in an order that changes from
+-- run to run (Lua seeds its string hashes afresh each time), so an object
+-- with two, say leisure=sports_centre and sport=hockey, could be classed
+-- differently by each rendering.
+poiTagOrder     = { "aerialway", "amenity", "barrier", "building", "highway", "historic", "landuse",
+					"leisure", "office", "railway", "shop", "sport", "tourism", "waterway" }
+
 -- POI "class" values: based on https://github.com/openmaptiles/openmaptiles/blob/master/layers/poi/poi.yaml
 poiClasses      = { townhall="town_hall", public_building="town_hall", courthouse="town_hall", community_centre="town_hall",
 					golf="golf", golf_course="golf", miniature_golf="golf",
@@ -920,7 +928,8 @@ function GetPOIRank()
 	local k,list,v,class,rank
 
 	-- Can we find the tag?
-	for k,list in pairs(poiTags) do
+	for _,k in ipairs(poiTagOrder) do
+		local list = poiTags[k]
 		if list[Find(k)] then
 			v = Find(k)	-- k/v are the OSM tag pair
 			class = poiClasses[v] or poiTagsAsClass[k] or v
