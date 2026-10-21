@@ -24,7 +24,7 @@ def request(zoom, x, y, when=None):
 		request_count=1, requested_at=when)
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1, IDLE_QUEUE=8)
 class PlanTests(TestCase):
 	def test_the_sweep_begins_at_the_corner(self):
 		# Nobody has asked for anything: the fleet starts at the front of the
@@ -139,11 +139,11 @@ class ClaimTests(TestCase):
 		self.assertLess(queue.claim_next("w", idle=True).priority, 0)
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=2, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1, RENDER_WORKERS=4)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=2, IDLE_SEEDS=200, SUMMARY_MAX_DEPTH=1, IDLE_QUEUE=4)
 class QueueIdleTests(TestCase):
 	def test_fills_up_to_the_renderers_below_requests(self):
 		request(12, 100, 100)
-		self.assertEqual(idle.queue_idle_work("w"), 4)  # one job per renderer
+		self.assertEqual(idle.queue_idle_work("w"), 4)  # IDLE_QUEUE of them
 		jobs = TileState.objects.filter(priority__lt=0)
 		self.assertEqual(jobs.count(), 4)
 		self.assertTrue(all(j.status == TileState.QUEUED and j.priority < 0 and j.depth == 1 for j in jobs))
@@ -157,6 +157,23 @@ class QueueIdleTests(TestCase):
 		request(12, 100, 100)
 		queue.request_tile(12, 50, 50, rerender=True)
 		# The request is queued, but the idle renderers still get their share
+		self.assertEqual(idle.queue_idle_work("w"), 4)
+
+	def test_tops_up_once_down_to_half(self):
+		request(12, 100, 100)
+		idle.queue_idle_work("w")
+		queue.claim_next("w")
+		self.assertEqual(idle.queue_idle_work("w"), 0)  # three left: more than half
+		queue.claim_next("w")
+		self.assertEqual(idle.queue_idle_work("w"), 2)  # two left: back up to four
+
+	def test_one_renderer_plans_at_a_time(self):
+		request(12, 100, 100)
+		with idle._planning() as planning:
+			self.assertTrue(planning)
+			self.assertTrue(idle.planning_now())
+			self.assertEqual(idle.queue_idle_work("w"), 0)  # another is planning
+		self.assertFalse(idle.planning_now())
 		self.assertEqual(idle.queue_idle_work("w"), 4)
 
 	def test_request_takes_over_an_idle_job(self):

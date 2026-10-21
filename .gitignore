@@ -10,3 +10,4 @@ tilecache/
 staticfiles/
 __pycache__/
 *.pyc
+idle-planner.lock

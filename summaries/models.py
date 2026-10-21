@@ -31,6 +31,13 @@ class TileSummary(models.Model):
 		constraints = [
 			models.UniqueConstraint(fields=["zoom", "x", "y"], name="tilesummary_unique_tile"),
 		]
+		indexes = [
+			# Which summaries there are, and whether they are current, from
+			# the index alone (build.missing, tiles.idle): in the table,
+			# format and recipe come after the data, and reading them means
+			# reading through it
+			models.Index(fields=["zoom", "x", "y", "format", "recipe"], name="tilesummary_current"),
+		]
 
 	def __str__(self):
 		return "summary {}/{}/{} v{}".format(self.zoom, self.x, self.y, self.version)

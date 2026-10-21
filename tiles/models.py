@@ -64,6 +64,9 @@ class TileState(models.Model):
 		]
 		indexes = [
 			models.Index(fields=["status", "-priority"], name="tilestate_queue"),
+			# The most recently requested tiles (tiles.idle._seeds), among the
+			# few that have been requested at all
+			models.Index(fields=["-requested_at"], condition=models.Q(request_count__gt=0), name="tilestate_requested"),
 		]
 
 	def __str__(self):

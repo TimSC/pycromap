@@ -146,14 +146,21 @@ class Command(BaseCommand):
 			while not stop.is_set():
 				close_old_connections()
 				if render_one(name):
+					# Top up the idle work while there is still some, so that
+					# the fleet renders on while one of them plans
+					if idle_work:
+						idle.queue_idle_work(name)
 					continue
 				if once:
 					break
 				wait = poll
 				queue.requeue_abandoned()
-				# Keep idle work queued for the whole fleet
-				if idle_work and idle.queue_idle_work(name) == 0:
-					wait = max(poll, settings.IDLE_POLL)
+				if idle_work:
+					idle.queue_idle_work(name)
+					# Only when there is nothing at all to do does it rest
+					# longer; while another plans, it looks again soon
+					if idle.idle_queued() == 0 and not idle.planning_now():
+						wait = max(poll, settings.IDLE_POLL)
 				stop.wait(wait)
 		finally:
 			connections.close_all()

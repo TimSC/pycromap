@@ -16,8 +16,11 @@ rows work, and the whole world eventually renders, and a request for a tile
 renders it, so the next recheck skips past it.
 """
 
+import fcntl
 import math
+from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
 
 from django.conf import settings
 from django.db import transaction
@@ -34,19 +37,40 @@ IDLE_PRIORITY = -1.0
 
 
 def _seeds():
-	"""The most recently requested tiles (zoom, x, y)."""
-	return list(TileState.objects.filter(kind=TileState.TILE, request_count__gt=0)
+	"""The most recently requested tiles (zoom, x, y). Only tiles are ever
+	requested (summaries are queued for them), so the kind needn't be
+	asked for, which would steer SQLite to the index of every tile. The
+	condition is written out, not passed as a parameter, as SQLite only uses
+	a partial index (tilestate_requested) for a query that states its
+	condition."""
+	return list(TileState.objects.extra(where=['"request_count" > 0'])
 		.order_by("-requested_at").values_list("zoom", "x", "y")[:settings.IDLE_SEEDS])
 
 
-def _summaries_at(level):
-	return set(summaries.current(TileSummary.objects.filter(zoom=level)).values_list("x", "y"))
+# The ranges below ask for each column of tiles (x IN ...) and a range of rows
+# (y BETWEEN ...), so that the index of each tile, by (kind, zoom, x, y) or
+# (zoom, x, y), finds each column's few: a range of x would have it read
+# every row of every column in it.
+
+def _stored_in(level, x0, x1, y0, y1):
+	"""The current summaries at a level within a range of tiles, as {(x, y)}."""
+	return set(summaries.current(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
+		y__range=(y0, y1))).values_list("x", "y"))
+
+
+def _rendered_in(zoom, x0, x1, y0, y1):
+	"""The rendered tiles at a zoom within a range of tiles, as {(x, y)}."""
+	return set(TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x__in=range(x0, x1 + 1), y__range=(y0, y1),
+		status=TileState.DONE, rendered_at__isnull=False).values_list("x", "y"))
 
 
 def _busy(kind, zoom):
-	"""Tiles with a job that is under way, or has failed."""
-	return set(TileState.objects.filter(kind=kind, zoom=zoom,
-		status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list("x", "y"))
+	"""Tiles with a job that is under way, or has failed. Found by status
+	alone, which the queue's index (tilestate_queue) finds the few of: asked
+	for by kind and zoom as well, SQLite would read every tile of the zoom."""
+	return {(x, y) for k, z, x, y in TileState.objects.filter(
+		status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list("kind", "zoom", "x", "y")
+		if k == kind and z == zoom}
 
 
 def _centres(seeds, zoom):
@@ -64,21 +88,49 @@ def _centres(seeds, zoom):
 	return centres
 
 
-def _near(seeds, zoom, radius):
-	"""Tiles at zoom around the seeds: (distance, x, y), the distance in tiles
-	at zoom, counting diagonals as one. The newest seed's rings come before
-	the next-newest seed's, so the place the user is now wins over where they
-	were."""
+def _rings(cx, cy, radius, n):
+	"""The tiles around (cx, cy), out to radius, nearest first: (x, y), the
+	distance counting diagonals as one."""
+	for r in range(radius + 1):
+		for x in range(cx - r, cx + r + 1):
+			for y in range(cy - r, cy + r + 1):
+				if max(abs(x - cx), abs(y - cy)) == r and 0 <= x < n and 0 <= y < n:
+					yield x, y
+
+
+def _ready_around(kind, zoom, cx, cy, radius):
+	"""A test of whether a tile around (cx, cy) at zoom is worth doing and can
+	be done now: not done yet, and what it is made from there. It looks up
+	only the tiles around the centre, with a range on the index of each, so
+	it costs the same however much of the map is done."""
 	n = 1 << zoom
-	seen = set()
-	for cx, cy in _centres(seeds, zoom):
-		for r in range(radius + 1):
-			for x in range(cx - r, cx + r + 1):
-				for y in range(cy - r, cy + r + 1):
-					if max(abs(x - cx), abs(y - cy)) != r or not (0 <= x < n and 0 <= y < n) or (x, y) in seen:
-						continue
-					seen.add((x, y))
-					yield r, x, y
+	x0, x1, y0, y1 = max(0, cx - radius), min(n - 1, cx + radius), max(0, cy - radius), min(n - 1, cy + radius)
+
+	def beneath(level):
+		scale = 1 << (level - zoom)
+		return _stored_in(level, x0 * scale, (x1 + 1) * scale - 1, y0 * scale, (y1 + 1) * scale - 1)
+
+	if kind == TileState.SUMMARY:
+		done = _stored_in(zoom, x0, x1, y0, y1)
+		finer = summaries.finer_level(zoom)
+		under = beneath(finer) if finer is not None else None
+
+		def ready(x, y):
+			if (x, y) in done:
+				return False
+			return under is None or all((fx, fy) in under for _, fx, fy in summaries.tiles_beneath(zoom, x, y, finer))
+		return ready
+
+	done = _rendered_in(zoom, x0, x1, y0, y1)
+	config = settings.TILE_ZOOMS[zoom]
+	level = config.get("level") if config["source"] == "summary" else None
+	under = beneath(level) if level is not None else None
+
+	def ready(x, y):
+		if (x, y) in done:
+			return False
+		return under is None or all((sx, sy) in under for _, sx, sy in summaries.tiles_beneath(zoom, x, y, level))
+	return ready
 
 
 def _candidate_levels(sweep):
@@ -105,39 +157,9 @@ def _candidate_levels(sweep):
 
 
 def _candidates(sweep):
-	"""As _candidate_levels, with a test of whether a tile at that zoom is
-	worth doing and can be done now. For the sweep the test is None: the
-	frontiers (tiles.idle._frontiers) do their own recheck of what is
-	rendered, and the test would only cost the queries to build it."""
-	if sweep:
-		return [(zoom, kind, None) for zoom, kind in _candidate_levels(sweep)]
-	kinds = []
-	stored = {level: _summaries_at(level) for level in summaries.levels()}
-	for level, kind in _candidate_levels(sweep):
-		if kind == TileState.SUMMARY:
-			finer = summaries.finer_level(level)
-
-			def ready(x, y, level=level, finer=finer):
-				if (x, y) in stored[level]:
-					return False
-				if finer is None:
-					return True
-				return all((fx, fy) in stored[finer] for _, fx, fy in summaries.tiles_beneath(level, x, y, finer))
-			kinds.append((level, TileState.SUMMARY, ready))
-		else:
-			config = settings.TILE_ZOOMS[level]
-			rendered = set(TileState.objects.filter(kind=TileState.TILE, zoom=level, status=TileState.DONE,
-				rendered_at__isnull=False).values_list("x", "y"))
-
-			def ready(x, y, level=level, config=config, rendered=rendered):
-				if (x, y) in rendered:
-					return False
-				if config["source"] != "summary":
-					return True
-				summary_level = config["level"]
-				return all((sx, sy) in stored.get(summary_level, ()) for _, sx, sy in summaries.tiles_beneath(level, x, y, summary_level))
-			kinds.append((level, TileState.TILE, ready))
-	return kinds
+	"""As _candidate_levels, as (zoom, kind, None): the sweep's frontiers
+	(tiles.idle._frontiers) do their own recheck of what is rendered."""
+	return [(zoom, kind, None) for zoom, kind in _candidate_levels(sweep)]
 
 
 def _rendered_xy(kind, zoom, ys):
@@ -230,7 +252,8 @@ def plan(count, worker):
 	rendering = set()
 	seeds = _seeds()
 	if seeds:
-		for zoom, kind, ready in _candidates(sweep=False):
+		radius = settings.IDLE_RADIUS
+		for zoom, kind in _candidate_levels(sweep=False):
 			if len(chosen) >= count:
 				break
 			busy = _busy(kind, zoom)
@@ -238,15 +261,27 @@ def plan(count, worker):
 				busy |= rendering
 				if (settings.TILE_ZOOMS.get(zoom) or {}).get("source") == "data":
 					busy |= _busy(TileState.TILE, zoom)
-			for _, x, y in _near(seeds, zoom, settings.IDLE_RADIUS):
+			near = set()
+			# The newest seed's rings before the next-newest seed's, so the
+			# place the user is now wins over where they were
+			for cx, cy in _centres(seeds, zoom):
 				if len(chosen) >= count:
 					break
-				if (x, y) in seen or (x, y) in busy or not ready(x, y):
-					continue
-				seen.add((x, y))
-				chosen.append((kind, zoom, x, y))
-				if kind == TileState.TILE and zoom == summaries.base_level() and settings.TILE_ZOOMS[zoom]["source"] == "data":
-					rendering.add((x, y))
+				ready = None
+				for x, y in _rings(cx, cy, radius, 1 << zoom):
+					if len(chosen) >= count:
+						break
+					if (x, y) in near or (x, y) in seen or (x, y) in busy:
+						continue
+					near.add((x, y))
+					# Looked up once a centre has a tile worth asking about
+					ready = ready or _ready_around(kind, zoom, cx, cy, radius)
+					if not ready(x, y):
+						continue
+					seen.add((x, y))
+					chosen.append((kind, zoom, x, y))
+					if kind == TileState.TILE and zoom == summaries.base_level() and settings.TILE_ZOOMS[zoom]["source"] == "data":
+						rendering.add((x, y))
 	for job in _sweep(count - len(chosen), worker):
 		if job in seen:
 			continue
@@ -264,28 +299,66 @@ def reclaim_sweeps():
 		claimed_by="", claimed_at=None)
 
 
-def queue_idle_work(worker):
-	"""Queues idle jobs until there are as many idle jobs queued as there are
-	renderers (RENDER_WORKERS), so the whole fleet has work when the requests
-	run out. Returns how many it queued."""
-	reclaim_sweeps()
-	queued = TileState.objects.filter(Q(not_before__isnull=True) | Q(not_before__lte=timezone.now()),
+def idle_queued():
+	"""How many idle jobs are queued and ready to be claimed."""
+	return TileState.objects.filter(Q(not_before__isnull=True) | Q(not_before__lte=timezone.now()),
 		status=TileState.QUEUED, priority__lt=0).count()
-	wanted = settings.RENDER_WORKERS - queued
-	if wanted <= 0:
+
+
+@contextmanager
+def _planning():
+	"""Whether this renderer may plan: only one at a time does, holding a
+	lock on a file beside the database, so that the fleet doesn't all plan
+	the same work at once when the queue runs low. Renderers sharing the
+	database on other machines plan for themselves."""
+	path = Path(settings.PYCROMAP_DB).parent / "idle-planner.lock"
+	with open(path, "a") as lock:
+		try:
+			fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+		except BlockingIOError:
+			yield False
+			return
+		try:
+			yield True
+		finally:
+			fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def planning_now():
+	"""Whether another renderer is planning idle work at the moment."""
+	with _planning() as planning:
+		return not planning
+
+
+def queue_idle_work(worker):
+	"""Tops up the idle jobs to IDLE_QUEUE, once they are down to half, so
+	the fleet has work when the requests run out. Only one renderer plans at
+	a time (see _planning): the others go on rendering. Returns how many it
+	queued."""
+	queued = idle_queued()
+	if queued * 2 > settings.IDLE_QUEUE:
 		return 0
-	now = timezone.now()
-	made = 0
-	for rank, (kind, zoom, x, y) in enumerate(plan(wanted, worker)):
-		with transaction.atomic():
-			job, _ = TileState.objects.get_or_create(kind=kind, zoom=zoom, x=x, y=y,
-				defaults={"status": TileState.DONE})
-			if job.status in (TileState.QUEUED, TileState.RENDERING, TileState.FAILED):
-				continue
-			# At the deepest depth, so that it never makes jobs of its own;
-			# the negative priority marks it as idle work
-			TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED,
-				priority=IDLE_PRIORITY - rank, depth=settings.SUMMARY_MAX_DEPTH, queued_at=now,
-				not_before=None, waiting_since=None, attempts=0, error="")
-			made += 1
-	return made
+	with _planning() as planning:
+		if not planning:
+			return 0
+		reclaim_sweeps()
+		# Again, now it's this renderer's turn: another may just have
+		queued = idle_queued()
+		wanted = settings.IDLE_QUEUE - queued
+		if queued * 2 > settings.IDLE_QUEUE:
+			return 0
+		now = timezone.now()
+		made = 0
+		for rank, (kind, zoom, x, y) in enumerate(plan(wanted, worker)):
+			with transaction.atomic():
+				job, _ = TileState.objects.get_or_create(kind=kind, zoom=zoom, x=x, y=y,
+					defaults={"status": TileState.DONE})
+				if job.status in (TileState.QUEUED, TileState.RENDERING, TileState.FAILED):
+					continue
+				# At the deepest depth, so that it never makes jobs of its own;
+				# the negative priority marks it as idle work
+				TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED,
+					priority=IDLE_PRIORITY - rank, depth=settings.SUMMARY_MAX_DEPTH, queued_at=now,
+					not_before=None, waiting_since=None, attempts=0, error="")
+				made += 1
+		return made

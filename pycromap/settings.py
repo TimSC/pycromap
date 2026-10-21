@@ -249,6 +249,10 @@ RENDER_IDLE_WORK = env("RENDER_IDLE_WORK", "false").lower() in ("1", "true", "ye
 IDLE_RADIUS = int(env("IDLE_RADIUS", "4"))
 IDLE_SEEDS = int(env("IDLE_SEEDS", "200"))
 IDLE_POLL = 10
+# How many idle jobs are kept queued for the fleet. One renderer at a time
+# plans them, and the queue is topped up once it is down to half, so the
+# others render on while it plans.
+IDLE_QUEUE = int(env("IDLE_QUEUE", str(RENDER_WORKERS * 16)))
 
 # Seconds after which a tile claimed by a renderer that has gone quiet is
 # given to another: longer than reading the map data and running tilemaker
