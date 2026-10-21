@@ -179,10 +179,17 @@ def cached_tile(request, path):
 	if not os.path.isfile(full):
 		raise Http404()
 	response = _gzipped_tile(FileResponse(open(full, "rb"), content_type=MVT_CONTENT_TYPE))
+	first = path.split("/")[0]
+	if first == queue.SHARED_DIR:
+		# Named by its content, so a name never has other content: kept for good
+		response["Cache-Control"] = "public, max-age=31536000, immutable"
+		return response
 	# The name has the version in it, so a rendering of a given version never
 	# changes; but a re-rendering at the same version (a new tilemaker profile)
 	# must reach the client, so the client's hold on it is the zoom's max_age
-	max_age = queue.zoom_config(int(path.split("/")[0])).get("max_age") or 86400
+	# (a day for a zoom without one, or one no longer served)
+	config = queue.zoom_config(int(first)) if first.isdecimal() else None
+	max_age = (config or {}).get("max_age") or 86400
 	response["Cache-Control"] = "public, max-age={}".format(max_age)
 	return response
 
