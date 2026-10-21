@@ -54,6 +54,10 @@ class TileState(models.Model):
 	# nothing in it)
 	rendered_at = models.DateTimeField(null=True, blank=True)
 	data_version = models.BigIntegerField(null=True, blank=True)
+	# When the map in a cached tile's area was last found unedited since the
+	# tile was made (tiles.views._needs_rendering): it isn't asked again for
+	# EDIT_CHECK_INTERVAL seconds after that, or after the tile was rendered
+	edits_checked_at = models.DateTimeField(null=True, blank=True)
 	render_seconds = models.FloatField(null=True, blank=True)
 	file = models.CharField(max_length=255, blank=True)
 	data = models.BinaryField(null=True, blank=True)

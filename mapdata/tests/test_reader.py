@@ -43,3 +43,24 @@ class NeedsWholeTests(SimpleTestCase):
 		for tags in ({"boundary": "administrative", "admin_level": "2", "name": "United States of America",
 				"maritime": "yes"}, {"boundary": "postal_code", "postal_code": "PO1"}):
 			self.assertFalse(needs_whole(tags), tags)
+
+
+class ChangedSinceSqlTests(SimpleTestCase):
+	def test_both_layers(self):
+		from mapdata.changes import changed_since_sql
+		sql = changed_since_sql(Layers(FakeConnection(), "s_", "m_"))
+		# New or changed versions, old ones where they were, and the imported
+		# map's objects taken over, in one statement
+		for table in ('"m_livenodes"', '"m_liveways"', '"m_liverelations"', '"m_oldnodes"', '"m_oldways"',
+				'"m_oldrelations"', '"m_nodeids"', '"s_livenodes"', '"m_wayids"', '"s_liveways"',
+				'"m_relationids"', '"s_liverelations"'):
+			self.assertIn(table, sql)
+		self.assertTrue(sql.startswith("SELECT EXISTS"))
+		# 9 conditions; old ways look up their nodes, old relations their nodes and ways
+		self.assertEqual(sql.count("EXISTS (SELECT 1 FROM"), 9 + 3)
+
+	def test_modify_layer_alone(self):
+		from mapdata.changes import changed_since_sql
+		sql = changed_since_sql(Layers(FakeConnection(), "", "m_"))
+		self.assertNotIn("ids", sql)
+		self.assertIn('"m_livenodes"', sql)

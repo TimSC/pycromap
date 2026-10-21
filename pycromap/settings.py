@@ -183,6 +183,11 @@ TILEMAKER = {
 #            rendered afresh for every request (not for "crop", never kept)
 #   "max_age": for a cached zoom, seconds after which a tile is rendered
 #              again when asked for (none: kept until it is gone)
+#   "check_edits": for a cached zoom made from the map data, whether a tile
+#              is rendered again when asked for once the map in its area has
+#              been edited since (see mapdata/changes.py); True unless set.
+#              Zooms made from summaries aren't checked: rendering them again
+#              would only use the same summaries.
 # Zooms without an entry are not served. The highest zoom rendered from the
 # data should have everything the zooms cut from it show: the profile gives
 # z12 the content of upstream's z14 (see profile/process.lua).
@@ -237,6 +242,12 @@ TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 # docker-compose.yml).
 TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
+# Seconds after a cached tile was rendered, or last found unedited, before a
+# request for it asks the map database again whether its area has been edited
+# (see "check_edits" in TILE_ZOOMS): an edit shows within this long, and a
+# busy tile costs a query at most this often
+EDIT_CHECK_INTERVAL = float(env("EDIT_CHECK_INTERVAL", "600"))
+
 # How many render_tiles processes to run: each renders one job at a time
 # (rendering is CPU-bound, and threads in one process share the GIL)
 RENDER_WORKERS = int(env("RENDER_WORKERS", "8"))
@@ -252,7 +263,7 @@ IDLE_POLL = 10
 # How many idle jobs are kept queued for the fleet. One renderer at a time
 # plans them, and the queue is topped up once it is down to half, so the
 # others render on while it plans.
-IDLE_QUEUE = int(env("IDLE_QUEUE", str(RENDER_WORKERS * 16)))
+IDLE_QUEUE = int(env("IDLE_QUEUE", str(RENDER_WORKERS * 64)))
 
 # Seconds after which a tile claimed by a renderer that has gone quiet is
 # given to another: longer than reading the map data and running tilemaker

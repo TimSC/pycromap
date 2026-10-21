@@ -1,9 +1,11 @@
 import json
+import logging
 import os
 from pathlib import Path
 
 from django.conf import settings
 from django.contrib.staticfiles import finders
+from django.db import DatabaseError
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import render
 from django.templatetags.static import static
@@ -11,12 +13,15 @@ from django.utils import timezone
 from django.utils._os import safe_join
 from django.views.decorators.http import require_GET
 
+from mapdata import changes
 from summaries import build as summaries
 
 from . import queue
 from .crop import crop
 from .models import TileState
-from .tilegeo import valid_tile
+from .tilegeo import tile_area, valid_tile
+
+logger = logging.getLogger(__name__)
 
 MVT_CONTENT_TYPE = "application/vnd.mapbox-vector-tile"
 
@@ -64,11 +69,34 @@ def _respond(tile, cached):
 	return _no_store(_gzipped_tile(HttpResponse(bytes(tile.data), content_type=MVT_CONTENT_TYPE)))
 
 
+def _edited_since(tile):
+	"""Whether the map in a tile's area has been edited since the newest edit
+	of what it was made from (see mapdata.changes). The map database is asked
+	at most once every EDIT_CHECK_INTERVAL seconds for a tile, counting from
+	when it was rendered or last found unedited; in between, it is taken to
+	be as it was, as it is if the map database can't say."""
+	now = timezone.now()
+	last = max(t for t in (tile.rendered_at, tile.edits_checked_at) if t is not None)
+	if (now - last).total_seconds() < settings.EDIT_CHECK_INTERVAL:
+		return False
+	try:
+		edited = changes.changed_since(tile.data_version or 0, *tile_area(tile.zoom, tile.x, tile.y))
+	except DatabaseError as e:
+		logger.warning("Couldn't tell whether %d/%d/%d has been edited: %s", tile.zoom, tile.x, tile.y, e)
+		return False
+	if not edited:
+		# Rendering it again starts the wait afresh, from rendered_at
+		TileState.objects.filter(pk=tile.pk).update(edits_checked_at=now)
+	return edited
+
+
 def _needs_rendering(existing, config):
 	"""Whether a tile needs rendering (again) for a request: an uncached zoom's
 	always; a cached zoom's if it hasn't been, its file is gone, it was
 	rendered while the zoom wasn't cached (its data is in the database, not a
-	file), or it is older than the zoom's max_age (seconds)."""
+	file), it is older than the zoom's max_age (seconds), or, for one made
+	from the map data, the map in its area has been edited since (unless the
+	zoom's check_edits is False)."""
 	if not config.get("cache", False):
 		return True
 	if existing is None or existing.status != TileState.DONE or existing.rendered_at is None:
@@ -78,7 +106,11 @@ def _needs_rendering(existing, config):
 	if not existing.file and existing.data:
 		return True
 	max_age = config.get("max_age")
-	return bool(max_age) and (timezone.now() - existing.rendered_at).total_seconds() > max_age
+	if max_age and (timezone.now() - existing.rendered_at).total_seconds() > max_age:
+		return True
+	if config["source"] == "data" and config.get("check_edits", True):
+		return _edited_since(existing)
+	return False
 
 
 def _obtain(zoom, x, y, config):

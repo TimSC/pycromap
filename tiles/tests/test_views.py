@@ -19,12 +19,96 @@ class TileViewTests(TransactionTestCase):
 		self.settings = override_settings(TILE_CACHE_DIR=Path(self.cache.name), TILE_CACHE_URL="/tilecache/",
 			TILE_ZOOMS={13: {"source": "data", "cache": False}, 12: {"source": "data", "cache": True, "max_age": 3600},
 				14: {"source": "crop", "from": 12}},
-			TILE_REQUEST_WAIT=5)
+			TILE_REQUEST_WAIT=5, EDIT_CHECK_INTERVAL=0)
 		self.settings.enable()
+		# Whether the map has been edited: it hasn't, unless a test says so
+		self.edited = mock.patch("tiles.views.changes.changed_since", return_value=False)
+		self.changed_since = self.edited.start()
 
 	def tearDown(self):
+		self.edited.stop()
 		self.settings.disable()
 		self.cache.cleanup()
+
+	def cached(self, zoom=12, x=1, y=2, version=5):
+		"""A cached tile, rendered just now from the map as at edit version."""
+		path = "{}/{}/{}.{}.pbf.gz".format(zoom, x, y, version)
+		(Path(self.cache.name) / path).parent.mkdir(parents=True, exist_ok=True)
+		(Path(self.cache.name) / path).write_bytes(b"tile")
+		return TileState.objects.create(zoom=zoom, x=x, y=y, status=TileState.DONE, rendered_at=timezone.now(),
+			file=path, data_version=version)
+
+	def test_cached_tile_is_kept_while_its_area_is_unedited(self):
+		from tiles.tilegeo import tile_area
+		self.cached()
+		response = self.client.get("/tiles/12/1/2.pbf")
+		self.assertEqual(response.status_code, 302)
+		# Asked about the tile's area, since the edit it was made at
+		self.changed_since.assert_called_once_with(5, *tile_area(12, 1, 2))
+
+	@override_settings(TILE_REQUEST_WAIT=0.2)
+	def test_cached_tile_is_rendered_again_once_its_area_is_edited(self):
+		self.cached()
+		self.changed_since.return_value = True
+		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)  # queued; no renderer here
+		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+
+	def test_cached_tile_is_served_if_the_map_cant_say(self):
+		from django.db import OperationalError
+		self.cached()
+		self.changed_since.side_effect = OperationalError("the map database is down")
+		with self.assertLogs("tiles.views", "WARNING"):
+			self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
+
+	@override_settings(EDIT_CHECK_INTERVAL=60)
+	def test_edits_are_checked_at_most_once_a_minute(self):
+		tile = self.cached()
+		# Rendered just now: not asked
+		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
+		self.changed_since.assert_not_called()
+		# A minute on, asked, and found unedited: not asked for another minute
+		TileState.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
+		self.client.get("/tiles/12/1/2.pbf")
+		self.client.get("/tiles/12/1/2.pbf")
+		self.assertEqual(self.changed_since.call_count, 1)
+		tile.refresh_from_db()
+		self.assertIsNotNone(tile.edits_checked_at)
+		# Another minute on, asked again
+		TileState.objects.filter(pk=tile.pk).update(edits_checked_at=timezone.now() - timedelta(seconds=61))
+		self.client.get("/tiles/12/1/2.pbf")
+		self.assertEqual(self.changed_since.call_count, 2)
+
+	@override_settings(EDIT_CHECK_INTERVAL=60, TILE_REQUEST_WAIT=0.2)
+	def test_an_edited_tile_is_not_marked_checked(self):
+		tile = self.cached()
+		TileState.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
+		self.changed_since.return_value = True
+		self.client.get("/tiles/12/1/2.pbf")
+		tile.refresh_from_db()
+		self.assertIsNone(tile.edits_checked_at)
+		self.assertEqual(tile.status, TileState.QUEUED)
+
+	def test_a_failed_check_is_not_marked_checked(self):
+		from django.db import OperationalError
+		tile = self.cached()
+		self.changed_since.side_effect = OperationalError("the map database is down")
+		with self.assertLogs("tiles.views", "WARNING"):
+			self.client.get("/tiles/12/1/2.pbf")
+		tile.refresh_from_db()
+		self.assertIsNone(tile.edits_checked_at)
+
+	def test_checking_edits_can_be_turned_off(self):
+		self.cached()
+		self.changed_since.return_value = True
+		with override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True, "check_edits": False}}):
+			self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
+		self.changed_since.assert_not_called()
+
+	def test_tiles_made_from_summaries_are_not_checked(self):
+		self.cached(zoom=11)
+		with override_settings(TILE_ZOOMS={11: {"source": "summary", "level": 12, "cache": True}}):
+			self.assertEqual(self.client.get("/tiles/11/1/2.pbf").status_code, 302)
+		self.changed_since.assert_not_called()
 
 	def test_unserved_zoom_and_bad_tiles(self):
 		self.assertEqual(self.client.get("/tiles/11/0/0.pbf").status_code, 404)

@@ -44,12 +44,14 @@ x-pycromap: &pycromap
     VIEWER_MAX_ZOOM: ${VIEWER_MAX_ZOOM:-18}
     DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
     TILE_REQUEST_WAIT: ${TILE_REQUEST_WAIT:-600}
+    EDIT_CHECK_INTERVAL: ${EDIT_CHECK_INTERVAL:-600}
     RENDER_TIMEOUT: ${RENDER_TIMEOUT:-600}
     SUMMARY_MAX_DEPTH: ${SUMMARY_MAX_DEPTH:-1}
     # Whether idle renderers work ahead (see README.md)
     RENDER_IDLE_WORK: ${RENDER_IDLE_WORK:-false}
     IDLE_RADIUS: ${IDLE_RADIUS:-4}
     IDLE_SEEDS: ${IDLE_SEEDS:-200}
+    IDLE_QUEUE: ${IDLE_QUEUE:-512}
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
