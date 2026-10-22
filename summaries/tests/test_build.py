@@ -8,6 +8,7 @@ from django.test import TestCase, override_settings
 from summaries import build
 from summaries.lua import summary_filter
 from summaries.models import TileSummary
+from tiles.tilegeo import tile_bounds
 
 
 def osm(nodes=(), ways=(), relations=()):
@@ -75,6 +76,33 @@ class SummarizeTests(TestCase):
 		self.assertEqual(out.ways[1].tags, {})  # in the relation for its geometry only
 		self.assertEqual([r.id for r in out.relations], [20])
 		self.assertEqual([n.id for n in out.nodes], [1, 2, 3, 5])
+
+	def test_lines_that_never_reach_the_tile_are_left_out(self):
+		west, south, east, north = tile_bounds(12, 2030, 1360)
+		size = east - west
+		mid_lat = (south + north) / 2
+		near_lon, far_lon = west + size / 2, east + 3 * size  # in the tile; three tiles east
+		data = osm(
+			nodes=[pyo5m.Node(1, mid_lat, west - size), pyo5m.Node(2, mid_lat, east + size),  # crosses the tile
+				pyo5m.Node(3, mid_lat, far_lon), pyo5m.Node(4, mid_lat + size, far_lon),  # nowhere near
+				pyo5m.Node(5, mid_lat + size, far_lon + size), pyo5m.Node(6, mid_lat, far_lon + size),
+				pyo5m.Node(7, mid_lat - size, near_lon)],
+			ways=[pyo5m.Way(10, [1, 2], {"boundary": "administrative", "admin_level": "4"}),
+				pyo5m.Way(11, [3, 4], {"boundary": "administrative", "admin_level": "4"}),
+				pyo5m.Way(12, [3, 4, 5, 6, 3], {"natural": "water"}),  # an area: kept
+				pyo5m.Way(13, [4, 5], {}), pyo5m.Way(14, [5, 6, 3], {})],
+			relations=[
+				# A boundary drawn from its ways: only the one reaching the tile
+				pyo5m.Relation(20, [pyo5m.Member("way", 10, "outer"), pyo5m.Member("way", 11, "outer")],
+					{"type": "boundary", "boundary": "administrative", "admin_level": "4"}),
+				# A multipolygon's members are kept, as it may cover the tile
+				pyo5m.Relation(21, [pyo5m.Member("way", 13, "outer"), pyo5m.Member("way", 14, "outer")],
+					{"type": "multipolygon", "natural": "wood"})])
+		out = build.summarize(data, 12, (2030, 1360))
+		self.assertEqual([w.id for w in out.ways], [10, 12, 13, 14])
+		self.assertEqual([m.ref for m in next(r for r in out.relations if r.id == 20).members], [10])
+		# Without a tile, nothing is left out
+		self.assertEqual([w.id for w in build.summarize(data, 12).ways], [10, 11, 12, 13, 14])
 
 	def test_encodes_and_decodes(self):
 		data = osm(nodes=[pyo5m.Node(5, 50.05, -0.96, {"place": "town"})])
@@ -219,7 +247,10 @@ class PyramidTests(TestCase):
 				self.assertNotEqual(build.recipe(), before)
 
 	def test_builds_from_the_finer_level(self):
-		road = osm(nodes=[pyo5m.Node(1, 50.0, -1.0), pyo5m.Node(2, 50.0, -0.9)],
+		# A road across the tile (a line elsewhere would be left out)
+		west, south, east, north = tile_bounds(10, 0, 0)
+		lat = (south + north) / 2
+		road = osm(nodes=[pyo5m.Node(1, lat, west), pyo5m.Node(2, lat, east)],
 			ways=[pyo5m.Way(10, [1, 2], {"highway": "primary"})])
 		beneath = build.tiles_beneath(10, 0, 0, 12)
 		for level, x, y in beneath[:-1]:

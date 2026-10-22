@@ -1,7 +1,8 @@
 """Building tile summaries.
 
 A summary keeps the objects of a tile's area that summary.lua picks for its
-level, whole, with their geometry simplified. The summary levels are the
+level, whole, with their geometry simplified; but not lines that never come
+near the tile (see LINE_MARGIN). The summary levels are the
 zooms TILE_ZOOMS marks "summary"; the finest is built from the map data; each
 coarser level from the summaries of the next finer level beneath it, merged.
 """
@@ -16,7 +17,7 @@ import os
 import pyo5m
 from django.conf import settings
 from django.utils import timezone
-from shapely.geometry import LineString
+from shapely.geometry import LineString, box
 
 from tiles.tilegeo import tile_bounds
 from .lua import summary_filter
@@ -34,7 +35,7 @@ def recipe():
 	"""What summaries are built with: a hash of summary.lua and the settings
 	that shape them. A summary with another recipe is out of date."""
 	shaping = json.dumps({"levels": levels(), "simplify": settings.SUMMARY_SIMPLIFY_PIXELS,
-		"format": FORMAT}, sort_keys=True)
+		"format": FORMAT, "line_margin": LINE_MARGIN}, sort_keys=True)
 	path = str(settings.SUMMARY_LUA)
 	key = (path, os.stat(path).st_mtime_ns, shaping)
 	if key not in _recipes:
@@ -90,6 +91,23 @@ def _latp(lat):
 	return math.degrees(math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)))
 
 
+# How far beyond its tile a summary keeps lines, as a fraction of the tile's
+# width (tiles are drawn with a buffer around them, so lines just outside
+# matter at the edges). The map database finds ways by their bounding boxes,
+# so a long border, coastline or river that curves or runs diagonally is read
+# for every tile in its box, most of which it never reaches: kept, those were
+# most of what summaries held. Part of the recipe.
+LINE_MARGIN = 0.1
+
+
+def _reach(level, x, y):
+	"""A tile's area, with LINE_MARGIN around it, in the degrees of longitude
+	and Web Mercator y that summarize works in (a tile is square in them)."""
+	west, south, east, north = tile_bounds(level, x, y)
+	margin = (east - west) * LINE_MARGIN
+	return box(west - margin, _latp(south) - margin, east + margin, _latp(north) + margin)
+
+
 def tolerance(level):
 	"""How far, in degrees of Web Mercator, simplified geometry may stray: a
 	fraction (SUMMARY_SIMPLIFY_PIXELS) of a pixel of a 4096-pixel tile at the
@@ -118,11 +136,16 @@ def simplify_refs(refs, coords, tol):
 	return out
 
 
-def summarize(data, level):
-	"""The objects of data worth keeping at a level, with simplified geometry."""
+def summarize(data, level, tile=None):
+	"""The objects of data worth keeping at a level, with simplified geometry.
+	For a tile (x, y), lines that never come within LINE_MARGIN of it are
+	left out: a line is only drawn where it is, and the tiles it does reach
+	keep it whole. Areas are kept, as one can cover the tile without its
+	outline reaching it: closed ways, and the members of multipolygons."""
 	keep = summary_filter()
 	tol = tolerance(level)
 	coords = {node.id: (node.lon, _latp(node.lat)) for node in data.nodes}
+	reach = _reach(level, *tile) if tile is not None else None
 
 	relations = []
 	for relation in data.relations:
@@ -131,6 +154,8 @@ def summarize(data, level):
 			relations.append((relation, tags))
 	relation_ids = {relation.id for relation, _ in relations}
 	member_ways = {m.ref for relation, _ in relations for m in relation.members if m.type == "way"}
+	area_members = {m.ref for relation, _ in relations if relation.tags.get("type") == "multipolygon"
+		for m in relation.members if m.type == "way"}
 
 	ways = {}
 	for way in data.ways:
@@ -142,6 +167,9 @@ def summarize(data, level):
 		# An area simplified away is too small to show, unless a relation
 		# needs it
 		if len(refs) < 2 or (closed and len(refs) < 4 and way.id not in member_ways):
+			continue
+		if (reach is not None and not closed and way.id not in area_members
+				and not reach.intersects(LineString([coords[ref] for ref in refs]))):
 			continue
 		ways[way.id] = pyo5m.Way(way.id, refs, tags or {})
 
@@ -336,7 +364,7 @@ def build_from_data(level, x, y, data, version):
 		return
 	if current(TileSummary.objects.filter(zoom=level, x=x, y=y, version=version)).exists():
 		return
-	data = summarize(data, level)
+	data = summarize(data, level, (x, y))
 	store(level, x, y, merge_objects(data, level, x, y), version)
 
 
@@ -349,6 +377,6 @@ def build_from_finer(level, x, y):
 	if absent:
 		return absent
 	loaded = [load(*tile) for tile in beneath]
-	data = summarize(merge(loaded), level)
+	data = summarize(merge(loaded), level, (x, y))
 	store(level, x, y, merge_objects(data, level, x, y), max(version for _, version in loaded))
 	return []
