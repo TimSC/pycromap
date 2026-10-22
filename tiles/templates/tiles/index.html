@@ -4,8 +4,8 @@
     <meta charset='utf-8' />
     <title>pycromap</title>
     <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
-    <script src='https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js'></script>
-    <link href='https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css' rel='stylesheet' />
+    <script src='https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js'></script>
+    <link href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css' rel='stylesheet' />
     <style>
         body { margin:0; padding:0; }
         #map { position:absolute; top:0; bottom:0; width:100%; }
@@ -39,6 +39,9 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 			style.sources.openmaptiles = Object.assign({ type: source.type }, spec);
 		}
 		style.glyphs = fromThisServer(style.glyphs);
+		// The tiles drawn on a globe, which flattens into the usual map as it
+		// zooms in; the globe button switches to the flat map and back
+		style.projection = { type: 'globe' };
 
 		var bounds = data['bounds'].split(',');
 		map = new maplibregl.Map({
@@ -53,6 +56,7 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		    hash: true
 		});
 		map.addControl(new maplibregl.NavigationControl());
+		map.addControl(new maplibregl.GlobeControl());
 		map.addControl(new maplibregl.AttributionControl({ compact: false, customAttribution:
 			"Style © <a href='http://openmaptiles.org/'>OpenMapTiles</a> | "+
 			"Data © <a href='http://www.openstreetmap.org/copyright'>OpenStreetMap contributors</a> | "+

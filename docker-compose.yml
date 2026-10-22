@@ -54,7 +54,7 @@ x-pycromap: &pycromap
     RENDER_IDLE_WORK: ${RENDER_IDLE_WORK:-false}
     IDLE_RADIUS: ${IDLE_RADIUS:-4}
     IDLE_SEEDS: ${IDLE_SEEDS:-200}
-    IDLE_QUEUE: ${IDLE_QUEUE:-512}
+    IDLE_QUEUE: ${IDLE_QUEUE:-4096}
   extra_hosts:
     - "host.docker.internal:host-gateway"
   volumes:
