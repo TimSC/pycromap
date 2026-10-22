@@ -352,6 +352,11 @@ def reclaim_sweeps():
 		claimed_by="", claimed_at=None)
 
 
+def release_sweeps(worker):
+	"""Gives a renderer's rows to others as it stops."""
+	return TileSweep.objects.filter(claimed_by=worker).update(claimed_by="", claimed_at=None)
+
+
 def idle_queued():
 	"""How many idle jobs are queued and ready to be claimed."""
 	return TileState.objects.filter(status=TileState.QUEUED, idle=True).count()

@@ -168,6 +168,13 @@ class ClaimTests(TestCase):
 		idle.plan(1, "w2")
 		self.assertEqual(TileSweep.objects.get(pk=row.pk).claimed_by, "w2")
 
+	def test_a_stopping_renderer_releases_its_rows(self):
+		idle.plan(1, "w1")
+		self.assertEqual(idle.release_sweeps("w1"), 1)
+		self.assertFalse(TileSweep.objects.exclude(claimed_by="").exists())
+		idle.plan(1, "w2")
+		self.assertEqual(TileSweep.objects.get(kind=TileState.SUMMARY, zoom=4, y=0).claimed_by, "w2")
+
 	def test_idle_jobs_are_left_unless_working_ahead(self):
 		request(4, 8, 8)
 		idle.queue_idle_work("w")

@@ -168,6 +168,24 @@ class QueueTests(TestCase):
 			(TileState.FAILED, TileRequest.WAITING, ""))
 		self.assertEqual(idle.status, TileState.QUEUED)
 
+	def test_a_stopping_renderer_releases_its_claims_at_once(self):
+		request = want(1, 2, 13)
+		queue.claim_next("a")
+		idle = TileState.objects.create(zoom=13, x=5, y=5, status=TileState.QUEUED, idle=True, priority=-1)
+		queue.claim_next("a", idle=True)
+		other = want(2, 2, 13)
+		queue.claim_next("b")
+		self.assertEqual(queue.release_claims("a"), 2)
+		request.refresh_from_db(); idle.refresh_from_db(); other.refresh_from_db()
+		tile = TileState.objects.get(x=1)
+		self.assertEqual((tile.status, tile.error, request.status, request.claimed_by),
+			(TileState.FAILED, "its renderer stopped", TileRequest.WAITING, ""))
+		self.assertEqual((idle.status, idle.claimed_by), (TileState.QUEUED, ""))
+		# Another renderer's claims are left alone
+		self.assertEqual((TileState.objects.get(x=2).status, other.status), (TileState.RENDERING, TileRequest.CLAIMED))
+		# and the released request is claimed again
+		self.assertEqual(queue.claim_next("c").x, 1)
+
 
 def vector_tile(features, layer="water"):
 	return gzip.compress(mapbox_vector_tile.encode([{"name": layer, "features": features, "extent": 4096}],

@@ -83,6 +83,9 @@ services:
   renderer:
     <<: *pycromap
     command: ["python", "manage.py", "render_fleet"]
+    # Time for each renderer to finish or break off its job and give what it
+    # holds to the others (by default Docker kills it after 10 seconds)
+    stop_grace_period: 30s
     depends_on:
       migrate:
         condition: service_completed_successfully

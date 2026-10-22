@@ -207,16 +207,29 @@ def forget_requests():
 
 # ---- Claiming and finishing jobs
 
+def _release(requests, jobs, reason):
+	"""Gives claimed work to other renderers: the requests (claimed) wait
+	again, the jobs (rendering) that were idle work are queued again, and the
+	others are marked failed, for the reason, so the requests for their tiles
+	can be claimed again. Returns how many jobs."""
+	requests.update(status=TileRequest.WAITING, claimed_by="", claimed_at=None)
+	return (jobs.filter(idle=True).update(status=TileState.QUEUED, claimed_by="", claimed_at=None) +
+		jobs.update(status=TileState.FAILED, claimed_by="", claimed_at=None, error=reason))
+
+
 def requeue_abandoned():
-	"""Gives the work claimed by renderers that have gone quiet to others: the
-	requests they claimed wait again (their tiles marked failed, abandoned),
-	and the idle work they were doing is queued again."""
+	"""Gives the work claimed by renderers that have gone quiet (for
+	RENDER_LEASE seconds) to others (see _release)."""
 	cutoff = timezone.now() - timedelta(seconds=settings.RENDER_LEASE)
-	TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_at__lt=cutoff).update(
-		status=TileRequest.WAITING, claimed_by="", claimed_at=None)
-	abandoned = TileState.objects.filter(status=TileState.RENDERING, claimed_at__lt=cutoff)
-	return (abandoned.filter(idle=True).update(status=TileState.QUEUED, claimed_by="", claimed_at=None) +
-		abandoned.update(status=TileState.FAILED, claimed_by="", claimed_at=None, error="abandoned by its renderer"))
+	return _release(TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_at__lt=cutoff),
+		TileState.objects.filter(status=TileState.RENDERING, claimed_at__lt=cutoff), "abandoned by its renderer")
+
+
+def release_claims(worker):
+	"""Gives the work a renderer has claimed to others as it stops (see
+	_release), rather than leaving it until RENDER_LEASE has passed."""
+	return _release(TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_by=worker),
+		TileState.objects.filter(status=TileState.RENDERING, claimed_by=worker), "its renderer stopped")
 
 
 def claim_next(worker, idle=True):

@@ -35,6 +35,11 @@ class FinalError(RenderError):
 	"""A failure that trying again won't mend"""
 
 
+class Stopped(Exception):
+	"""The renderer is stopping, part way through a job: the job is given to
+	another renderer (queue.release_claims)"""
+
+
 def _tiles(tiles):
 	return ", ".join("{}/{}/{}".format(*tile) for tile in tiles[:5]) + (" ..." if len(tiles) > 5 else "")
 
@@ -61,7 +66,7 @@ def missing_tree(needed):
 	return tree
 
 
-def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL):
+def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 	"""Builds every summary missing under those a claimed tile is made from
 	(needed), so it can be rendered: the claiming renderer is responsible for
 	them all (CASCADE_MIN_ZOOM). Again and again, of those missing and not
@@ -69,11 +74,15 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL):
 	built from is there), adds it to TileState as a job, claims it, and builds
 	it. Those other renderers are building, it waits for. It keeps its claim
 	on the tile fresh as it goes, and stops (FinalError) if no request wants
-	the tile any more, or a summary it needs can't be built."""
+	the tile any more, or a summary it needs can't be built; or (Stopped) if
+	the renderer is stopping (stop is set), between summaries, keeping those
+	built."""
 	while True:
 		tree = missing_tree(needed)
 		if not tree:
 			return
+		if stop is not None and stop.is_set():
+			raise Stopped()
 		if not queue.still_wanted(job):
 			raise FinalError("stopped: no request wants it any more; {} summaries it needs aren't built".format(len(tree)))
 		# Ready: not underway, and with nothing it is built from missing
@@ -105,7 +114,7 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL):
 		queue.refresh_claim(job, worker)
 
 
-def render_tile_job(job, worker=""):
+def render_tile_job(job, worker="", stop=None):
 	"""Renders a tile. Returns the tile and its data version. For a tile
 	claimed for requests at or above CASCADE_MIN_ZOOM, made from summaries,
 	the summaries it needs are built first (build_dependencies)."""
@@ -124,7 +133,7 @@ def render_tile_job(job, worker=""):
 	# From summaries: those beneath it at the configured level, merged
 	needed = summaries.tiles_beneath(job.zoom, job.x, job.y, config["level"])
 	if not job.idle and job.zoom >= settings.CASCADE_MIN_ZOOM:
-		build_dependencies(job, needed, worker)
+		build_dependencies(job, needed, worker, stop=stop)
 	missing = summaries.missing(needed)
 	if missing:
 		raise FinalError("summaries it is made from aren't built: " + _tiles(missing))
@@ -144,10 +153,11 @@ def build_summary_job(job):
 	return summaries.load(job.zoom, job.x, job.y)[1]
 
 
-def render_one(process):
+def render_one(process, stop=None):
 	"""Does the next queued job, if there is one. Returns whether there was.
 	Jobs queued by idle renderers are done only when working ahead
-	(RENDER_IDLE_WORK)."""
+	(RENDER_IDLE_WORK). A job broken off as the renderer stops (stop set) is
+	left claimed, for the renderer to give away as it exits."""
 	job = queue.claim_next(process, idle=settings.RENDER_IDLE_WORK)
 	if job is None:
 		return False
@@ -159,10 +169,12 @@ def render_one(process):
 			queue.finish_summary(job, version, time.monotonic() - started)
 			logger.info("Built %s: version %s, %.2fs", name, version, time.monotonic() - started)
 		else:
-			tile, version = render_tile_job(job, process)
+			tile, version = render_tile_job(job, process, stop)
 			cached = (queue.zoom_config(job.zoom) or {}).get("cache", False)
 			queue.finish(job, tile, version, time.monotonic() - started, cached)
 			logger.info("Rendered %s: %d bytes, version %s, %.2fs", name, len(tile), version, time.monotonic() - started)
+	except Stopped:
+		logger.info("Stopped %s part way", name)
 	except Exception as e:
 		logger.warning("%s failed: %s", name, e)
 		queue.fail(job, e, final=isinstance(e, FinalError))
@@ -188,17 +200,20 @@ class Command(BaseCommand):
 		idle_work = settings.RENDER_IDLE_WORK and not once
 		self.stdout.write("Rendering as {}{}".format(name,
 			", working ahead when idle" if idle_work else ""))
-		forgotten = 0.0  # when cancelled requests were last cleared out
+		forgotten = 0.0  # when requests and abandoned work were last cleared out
 		try:
 			while not stop.is_set():
 				close_old_connections()
 				# Requests whose clients went away are kept a while, and
-				# those left unanswered too long are dropped; cleared out at
-				# most once a minute, busy or not
+				# those left unanswered too long are dropped; and work left by
+				# renderers that went quiet is given to others. At most once
+				# a minute, busy or not: with idle work, a renderer is never
+				# without a job
 				if time.monotonic() - forgotten > 60:
 					queue.forget_requests()
+					queue.requeue_abandoned()
 					forgotten = time.monotonic()
-				if render_one(name):
+				if render_one(name, stop):
 					# Top up the idle work while there is still some, so that
 					# the fleet renders on while one of them plans
 					if idle_work:
@@ -207,7 +222,6 @@ class Command(BaseCommand):
 				if once:
 					break
 				wait = poll
-				queue.requeue_abandoned()
 				if idle_work:
 					idle.queue_idle_work(name)
 					# Only when there is nothing at all to do does it rest
@@ -216,5 +230,8 @@ class Command(BaseCommand):
 						wait = max(poll, settings.IDLE_POLL)
 				stop.wait(wait)
 		finally:
+			# What it holds goes to the others now, not after RENDER_LEASE
+			released = queue.release_claims(name)
+			idle.release_sweeps(name)
 			connections.close_all()
-		self.stdout.write("Stopped")
+		self.stdout.write("Stopped{}".format(", giving up {} jobs".format(released) if released else ""))

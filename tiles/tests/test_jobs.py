@@ -1,3 +1,4 @@
+import threading
 from unittest import mock
 
 import pyo5m
@@ -110,6 +111,26 @@ class JobTests(TestCase):
 			with self.assertRaises(FinalError):
 				build_dependencies(job, build.tiles_beneath(11, 3, 4, 12), "w")
 		read.assert_not_called()
+
+	def test_a_stopping_renderer_breaks_off_a_cascade_and_leaves_its_claim(self):
+		from tiles.management.commands.render_tiles import Stopped, build_dependencies
+		job = TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.RENDERING,
+			claimed_by="w", priority=1)
+		want(11, 3, 4)
+		stop = threading.Event()
+		stop.set()
+		with mock.patch(READ) as read:
+			with self.assertRaises(Stopped):
+				build_dependencies(job, build.tiles_beneath(11, 3, 4, 12), "w", stop=stop)
+		read.assert_not_called()
+		# Through render_one: the job isn't failed, but left claimed, to be released
+		request = want(10, 0, 0)
+		with mock.patch(READ), mock.patch(RENDER) as render:
+			render_one("v", stop)
+		render.assert_not_called()
+		tile = TileState.objects.get(kind=TileState.TILE, zoom=10)
+		request.refresh_from_db()
+		self.assertEqual((tile.status, tile.claimed_by, request.status), (TileState.RENDERING, "v", TileRequest.CLAIMED))
 
 	def test_waits_for_a_summary_another_renderer_is_building(self):
 		from tiles.management.commands.render_tiles import build_dependencies
