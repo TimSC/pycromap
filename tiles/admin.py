@@ -16,8 +16,8 @@ class TileRequestAdmin(admin.ModelAdmin):
 	list_display = ("__str__", "started_at", "status", "claimed_by", "cache_redirect", "cancelled", "cancelled_at")
 	list_filter = ("status", "cache_redirect", "cancelled", "zoom")
 	ordering = ("-started_at",)
-	readonly_fields = ("zoom", "x", "y", "started_at", "status", "claimed_by", "claimed_at", "cache_redirect",
-		"cancelled", "cancelled_at")
+	readonly_fields = ("zoom", "x", "y", "started_at", "status", "claimed_by", "claimed_at", "attempts",
+		"cache_redirect", "dependencies", "cancelled", "cancelled_at")
 	fields = readonly_fields
 	actions = None
 

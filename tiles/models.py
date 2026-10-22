@@ -132,6 +132,10 @@ class TileRequest(models.Model):
 	# Being answered with a redirect to the tile's cached file: there is
 	# nothing to render for it, and renderers don't claim it
 	cache_redirect = models.BooleanField(default=False)
+	# What its tile is made from directly, built or not, as [kind, zoom, x, y]
+	# (queue.dependencies): none for a tile from the map data; the summaries
+	# beneath it at its zoom's level for one from summaries
+	dependencies = models.JSONField(default=list, blank=True)
 	cancelled = models.BooleanField(default=False)
 	cancelled_at = models.DateTimeField(null=True, blank=True)
 

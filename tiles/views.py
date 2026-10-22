@@ -43,12 +43,10 @@ def _placeholder():
 
 
 def _can_render(zoom, x, y, config):
-	"""Whether a tile can be rendered now: from map data, or from summaries
-	that are all built. A request doesn't queue the summaries a tile needs,
-	for now: the idle renderers build them."""
-	if config["source"] != "summary":
-		return True
-	return not summaries.missing(summaries.tiles_beneath(zoom, x, y, config["level"]))
+	"""Whether a tile is rendered on demand: at or above CASCADE_MIN_ZOOM, as
+	the renderer that claims it builds whatever summaries it needs that are
+	missing. Below it, it is left to the idle renderers."""
+	return zoom >= settings.CASCADE_MIN_ZOOM
 
 
 def _gzipped_tile(response):
@@ -180,7 +178,8 @@ async def tile(request, zoom, x, y):
 		needs = (config["from"], x // scale, y // scale)
 	else:
 		needs = (zoom, x, y)
-	tracked = await TileRequest.objects.acreate(zoom=needs[0], x=needs[1], y=needs[2])
+	tracked = await TileRequest.objects.acreate(zoom=needs[0], x=needs[1], y=needs[2],
+		dependencies=queue.dependencies(*needs))
 	try:
 		response = await _answer(config, zoom, x, y, tracked.pk)
 	except asyncio.CancelledError:

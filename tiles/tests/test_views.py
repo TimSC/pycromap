@@ -324,6 +324,35 @@ class TileRequestTests(TransactionTestCase):
 		self.assertEqual(request.status, TileRequest.WAITING)
 		self.assertIsNone(queue.claim_next("w"))
 
+	def test_a_request_keeps_its_tiles_direct_dependencies(self):
+		import asyncio
+		from summaries import build
+
+		async def ask_then_go(path, *args):
+			from django.test import RequestFactory
+			from tiles import views
+			task = asyncio.create_task(views.tile(RequestFactory().get(path), *args))
+			for _ in range(100):
+				await asyncio.sleep(0.05)
+				if await TileRequest.objects.filter(status=TileRequest.WAITING, cancelled=False).aexists():
+					break
+			task.cancel()
+			with self.assertRaises(asyncio.CancelledError):
+				await task
+
+		zooms = {12: {"source": "data", "cache": True, "summary": True}, 13: {"source": "crop", "from": 12},
+			11: {"source": "summary", "level": 12, "cache": True}}
+		with override_settings(TILE_ZOOMS=zooms):
+			for level, x, y in build.tiles_beneath(11, 3, 4, 12):
+				build.store(level, x, y, pyo5m.OsmData(), 1)  # built, so the request waits
+			asyncio.run(ask_then_go("/tiles/11/3/4.pbf", 11, 3, 4))
+			asyncio.run(ask_then_go("/tiles/13/1/2.pbf", 13, 1, 2))
+		kept = {(r.zoom, r.x, r.y): r.dependencies for r in TileRequest.objects.all()}
+		self.assertEqual(kept[(11, 3, 4)], [["summary", 12, 6, 8], ["summary", 12, 6, 9],
+			["summary", 12, 7, 8], ["summary", 12, 7, 9]])
+		# A cut zoom's request is for the tile it is cut from, made from the map data
+		self.assertEqual(kept[(12, 0, 1)], [])
+
 	def test_a_request_that_fails_is_not_kept(self):
 		import asyncio
 		with mock.patch("tiles.views._answer", side_effect=RuntimeError("broken")):

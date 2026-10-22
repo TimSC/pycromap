@@ -42,8 +42,76 @@ def _tiles(tiles):
 	return ", ".join("{}/{}/{}".format(*tile) for tile in tiles[:5]) + (" ..." if len(tiles) > 5 else "")
 
 
-def render_tile_job(job):
-	"""Renders a tile. Returns the tile and its data version."""
+# Seconds between looks at the summaries other renderers are building
+DEPENDENCY_POLL = 1.0
+
+
+def missing_tree(needed):
+	"""Every summary missing under the summaries needed (level, x, y): those
+	missing, the missing ones those are built from, and so on, down to the
+	base level, built from the map data."""
+	tree, frontier, seen = [], summaries.missing(needed), set()
+	while frontier:
+		frontier = [tile for tile in frontier if tile not in seen]
+		seen.update(frontier)
+		tree.extend(frontier)
+		finer = []
+		for level, x, y in frontier:
+			beneath = summaries.finer_level(level)
+			if beneath is not None:
+				finer.extend(summaries.missing(summaries.tiles_beneath(level, x, y, beneath)))
+		frontier = finer
+	return tree
+
+
+def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL):
+	"""Builds every summary missing under those a claimed tile is made from
+	(needed), so it can be rendered: the claiming renderer is responsible for
+	them all (CASCADE_MIN_ZOOM). Again and again, of those missing and not
+	underway, it takes one at the highest zoom (the finest, so what it is
+	built from is there), adds it to TileState as a job, claims it, and builds
+	it. Those other renderers are building, it waits for. It keeps its claim
+	on the tile fresh as it goes, and stops (FinalError) if no request wants
+	the tile any more, or a summary it needs can't be built."""
+	while True:
+		tree = missing_tree(needed)
+		if not tree:
+			return
+		if not queue.still_wanted(job):
+			raise FinalError("stopped: no request wants it any more; {} summaries it needs aren't built".format(len(tree)))
+		# Ready: not underway, and with nothing it is built from missing
+		missing, busy = set(tree), queue.underway(tree)
+
+		def buildable(tile):
+			level, x, y = tile
+			finer = summaries.finer_level(level)
+			return finer is None or not any(beneath in missing for beneath in summaries.tiles_beneath(level, x, y, finer))
+		ready = [tile for tile in tree if tile not in busy and buildable(tile)]
+		if not ready:
+			# What is left waits for what other renderers are building
+			queue.refresh_claim(job, worker)
+			time.sleep(wait)
+			continue
+		level, x, y = max(ready, key=lambda tile: tile[0])
+		dependency = queue.claim_dependency(level, x, y, worker, job.priority)
+		if dependency is None:
+			continue  # another renderer took it meanwhile
+		started = time.monotonic()
+		try:
+			version = build_summary_job(dependency)
+		except Exception as e:
+			queue.fail(dependency, e, final=True)
+			raise FinalError("summary {}/{}/{} it needs failed: {}".format(level, x, y, e))
+		queue.finish_summary(dependency, version, time.monotonic() - started)
+		logger.info("Built summary %d/%d/%d for %s %d/%d/%d: version %s, %.2fs", level, x, y, job.kind, job.zoom,
+			job.x, job.y, version, time.monotonic() - started)
+		queue.refresh_claim(job, worker)
+
+
+def render_tile_job(job, worker=""):
+	"""Renders a tile. Returns the tile and its data version. For a tile
+	claimed for requests at or above CASCADE_MIN_ZOOM, made from summaries,
+	the summaries it needs are built first (build_dependencies)."""
 	config = queue.zoom_config(job.zoom)
 	if config is None:
 		raise RenderError("zoom {} is not served".format(job.zoom))
@@ -58,6 +126,8 @@ def render_tile_job(job):
 
 	# From summaries: those beneath it at the configured level, merged
 	needed = summaries.tiles_beneath(job.zoom, job.x, job.y, config["level"])
+	if job.priority >= 0 and job.zoom >= settings.CASCADE_MIN_ZOOM:
+		build_dependencies(job, needed, worker)
 	missing = summaries.missing(needed)
 	if missing:
 		raise FinalError("summaries it is made from aren't built: " + _tiles(missing))
@@ -92,7 +162,7 @@ def render_one(process):
 			queue.finish_summary(job, version, time.monotonic() - started)
 			logger.info("Built %s: version %s, %.2fs", name, version, time.monotonic() - started)
 		else:
-			tile, version = render_tile_job(job)
+			tile, version = render_tile_job(job, process)
 			cached = (queue.zoom_config(job.zoom) or {}).get("cache", False)
 			queue.finish(job, tile, version, time.monotonic() - started, cached)
 			logger.info("Rendered %s: %d bytes, version %s, %.2fs", name, len(tile), version, time.monotonic() - started)

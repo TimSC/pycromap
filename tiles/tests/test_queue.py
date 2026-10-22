@@ -207,3 +207,20 @@ class CommonTileTests(SimpleTestCase):
 		self.assertEqual(len(content_hash(b"tile")), 32)
 		self.assertEqual(file_name(b"tile"), content_hash(b"tile") + ".pbf.gz")
 		self.assertTrue(all(len(describe(x) or "") <= NAME_LENGTH for x in (b"", sea)))
+
+
+@override_settings(TILE_ZOOMS={13: {"source": "crop", "from": 12}, 12: {"source": "data", "cache": True, "summary": True},
+	11: {"source": "summary", "level": 12, "cache": True}, 10: {"source": "summary", "level": 12, "cache": True},
+	9: {"source": "summary", "level": 10, "cache": True}})
+class DependencyTests(SimpleTestCase):
+	def test_a_tile_from_the_map_data_has_none(self):
+		self.assertEqual(queue.dependencies(12, 2035, 1374), [])
+
+	def test_a_tile_from_summaries_has_those_beneath_it_built_or_not(self):
+		self.assertEqual(queue.dependencies(11, 3, 4), [["summary", 12, 6, 8], ["summary", 12, 6, 9],
+			["summary", 12, 7, 8], ["summary", 12, 7, 9]])
+		self.assertEqual(len(queue.dependencies(10, 0, 0)), 16)  # two zooms down
+		self.assertEqual(queue.dependencies(9, 1, 1)[0], ["summary", 10, 2, 2])
+
+	def test_a_cut_tile_has_the_tile_it_is_cut_from(self):
+		self.assertEqual(queue.dependencies(13, 4071, 2749), [["tile", 12, 2035, 1374]])

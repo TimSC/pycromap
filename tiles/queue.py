@@ -19,6 +19,8 @@ from django.db import transaction
 from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
+from summaries import build as summaries
+
 from .models import TileRequest, TileState
 from .common import COMMON_DIR, common_file
 
@@ -56,6 +58,22 @@ def _write(path, data):
 	with open(temporary, "wb") as f:
 		f.write(data)
 	os.replace(temporary, full)
+
+
+def dependencies(zoom, x, y):
+	"""What a tile is made from directly, built or not, as [kind, zoom, x, y]:
+	nothing for a tile from the map data (the summary its rendering builds is
+	made from it, not the other way round); the summaries beneath it at its
+	zoom's level (TILE_ZOOMS) for a tile from summaries; and for a tile cut
+	from another zoom's, the tile it is cut from."""
+	config = zoom_config(zoom) or {}
+	if config.get("source") == "summary":
+		return [[TileState.SUMMARY, level, sx, sy] for level, sx, sy in
+			summaries.tiles_beneath(zoom, x, y, config["level"])]
+	if config.get("source") == "crop":
+		scale = 1 << (zoom - config["from"])
+		return [[TileState.TILE, config["from"], x // scale, y // scale]]
+	return []
 
 
 def log_request(zoom, x, y):
@@ -139,6 +157,48 @@ def _claim_requested(worker):
 					status=TileRequest.WAITING, claimed_by="", claimed_at=None)
 				continue
 		return TileState.objects.get(pk=tile.pk)
+
+
+# ---- Dependencies a renderer builds for a tile it has claimed (see
+# render_tiles.build_dependencies)
+
+def underway(summary_tiles):
+	"""Those of the summaries (level, x, y) whose jobs some renderer is
+	working on."""
+	wanted = set(summary_tiles)
+	levels = {level for level, _, _ in wanted}
+	return wanted & set(TileState.objects.filter(kind=TileState.SUMMARY, status=TileState.RENDERING,
+		zoom__in=levels).values_list("zoom", "x", "y"))
+
+
+def claim_dependency(level, x, y, worker, priority):
+	"""Adds a summary to TileState as a job, if it isn't there, and claims it
+	for a renderer building it for a tile it has claimed (at that tile's
+	priority). Returns the job, or None if another renderer has it."""
+	with transaction.atomic():
+		job, _ = TileState.objects.get_or_create(kind=TileState.SUMMARY, zoom=level, x=x, y=y,
+			defaults={"status": TileState.DONE})
+		now = timezone.now()
+		taken = TileState.objects.filter(pk=job.pk).exclude(status=TileState.RENDERING).update(
+			status=TileState.RENDERING, claimed_by=worker, claimed_at=now, priority=priority, queued_at=now,
+			attempts=1, error="")
+	return TileState.objects.get(pk=job.pk) if taken else None
+
+
+def refresh_claim(tile, worker):
+	"""Keeps a renderer's claim on a tile, and on the requests it claimed for
+	it, from looking abandoned (RENDER_LEASE) while it works on the tile's
+	dependencies."""
+	now = timezone.now()
+	TileState.objects.filter(pk=tile.pk, claimed_by=worker).update(claimed_at=now)
+	TileRequest.objects.filter(zoom=tile.zoom, x=tile.x, y=tile.y, status=TileRequest.CLAIMED,
+		claimed_by=worker).update(claimed_at=now)
+
+
+def still_wanted(tile):
+	"""Whether any request not cancelled still waits for a tile."""
+	return TileRequest.objects.filter(zoom=tile.zoom, x=tile.x, y=tile.y, cancelled=False,
+		status__in=(TileRequest.WAITING, TileRequest.CLAIMED)).exists()
 
 
 def forget_requests():

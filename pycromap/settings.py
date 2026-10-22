@@ -228,6 +228,15 @@ TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 # server, uvicorn, sets requests no time limit of its own.
 TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
+# The lowest zoom rendered on demand. A request for a tile at or above it is
+# queued, and the renderer that claims it builds every summary it needs that
+# is missing, down to the map data, before rendering it (see
+# render_tiles.build_dependencies): the lower the zoom, the more that can be,
+# 16 times more for each zoom between summary levels. Below it, a request is
+# answered from the cache, or with a placeholder: the idle renderers render
+# those zooms.
+CASCADE_MIN_ZOOM = int(env("CASCADE_MIN_ZOOM", "8"))
+
 # Seconds a request whose client went away is kept, flagged cancelled (see
 # tiles.models.TileRequest), before the renderers' housekeeping deletes it
 CANCELLED_REQUEST_KEEP = float(env("CANCELLED_REQUEST_KEEP", "600"))

@@ -39,17 +39,96 @@ class JobTests(TestCase):
 		request.refresh_from_db()
 		self.assertEqual((tile.status, tile.data_version, request.status), (TileState.DONE, 8, TileRequest.DONE))
 
-	def test_a_tile_from_summaries_not_all_built_fails_without_queueing_them(self):
+	def test_a_claimed_tile_has_its_missing_summaries_built_first(self):
 		build.store(12, 6, 8, town(), 8)  # one of the four
 		request = want(11, 3, 4)
-		with mock.patch(RENDER) as render:
+		with mock.patch(READ, return_value=(town(), 9)) as read, mock.patch(RENDER, return_value=b"tile") as render:
+			render_one("w")
+		self.assertEqual(read.call_count, 3)  # the three missing, from the map data
+		self.assertEqual(build.missing(build.tiles_beneath(11, 3, 4, 12)), [])
+		render.assert_called_once()
+		# Each added to TileState as a job, claimed and done
+		jobs = TileState.objects.filter(kind=TileState.SUMMARY)
+		self.assertEqual(set(jobs.values_list("zoom", "x", "y", "status", "claimed_by")),
+			{(12, x, y, TileState.DONE, "") for x, y in ((6, 9), (7, 8), (7, 9))})
+		tile = TileState.objects.get(kind=TileState.TILE)
+		request.refresh_from_db()
+		self.assertEqual((tile.status, request.status), (TileState.DONE, TileRequest.DONE))
+
+	def test_the_whole_cascade_finest_first(self):
+		# z10 is made from its level-10 summary, built from 16 level-12 ones
+		want(10, 0, 0)
+		built = []
+		original = build.store
+
+		def storing(level, x, y, data, version):
+			built.append(level)
+			return original(level, x, y, data, version)
+		with mock.patch(READ, return_value=(town(), 9)) as read, mock.patch(RENDER, return_value=b"tile") as render, \
+				mock.patch("summaries.build.store", side_effect=storing):
+			render_one("w")
+		self.assertEqual(read.call_count, 16)
+		self.assertEqual(built, [12] * 16 + [10])
+		render.assert_called_once()
+		self.assertEqual(TileState.objects.get(kind=TileState.TILE).status, TileState.DONE)
+
+	@override_settings(CASCADE_MIN_ZOOM=12)
+	def test_below_cascade_min_zoom_nothing_is_built(self):
+		request = want(11, 3, 4)
+		with mock.patch(READ) as read, mock.patch(RENDER) as render:
+			render_one("w")
+		read.assert_not_called(); render.assert_not_called()
+		request.refresh_from_db()
+		self.assertEqual(request.status, TileRequest.FAILED)
+		self.assertFalse(TileState.objects.filter(kind=TileState.SUMMARY).exists())
+
+	def test_idle_work_builds_nothing_it_needs(self):
+		TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.QUEUED, priority=-1)
+		with mock.patch(READ) as read, mock.patch(RENDER):
+			with override_settings(RENDER_IDLE_WORK=True):
+				render_one("w")
+		read.assert_not_called()
+		self.assertEqual(TileState.objects.get(kind=TileState.TILE).status, TileState.FAILED)
+
+	def test_a_summary_that_fails_fails_the_tile(self):
+		request = want(11, 3, 4)
+		with mock.patch(READ, side_effect=RuntimeError("no map")), mock.patch(RENDER) as render:
 			render_one("w")
 		render.assert_not_called()
 		tile = TileState.objects.get(kind=TileState.TILE)
 		request.refresh_from_db()
 		self.assertEqual((tile.status, request.status), (TileState.FAILED, TileRequest.FAILED))
-		self.assertIn("aren't built: 12/6/9", tile.error)
-		self.assertFalse(TileState.objects.filter(kind=TileState.SUMMARY).exists())
+		self.assertIn("it needs failed: no map", tile.error)
+		self.assertEqual(TileState.objects.filter(kind=TileState.SUMMARY, status=TileState.FAILED).count(), 1)
+
+	def test_building_stops_once_nobody_wants_the_tile(self):
+		from tiles.management.commands.render_tiles import FinalError, build_dependencies
+		job = TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.RENDERING,
+			claimed_by="w", priority=1)
+		TileRequest.objects.create(zoom=11, x=3, y=4, status=TileRequest.CLAIMED, claimed_by="w", cancelled=True)
+		with mock.patch(READ) as read:
+			with self.assertRaises(FinalError):
+				build_dependencies(job, build.tiles_beneath(11, 3, 4, 12), "w")
+		read.assert_not_called()
+
+	def test_waits_for_a_summary_another_renderer_is_building(self):
+		from tiles.management.commands.render_tiles import build_dependencies
+		for x, y in ((6, 8), (6, 9), (7, 8)):
+			build.store(12, x, y, town(), 8)
+		other = TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=7, y=9, status=TileState.RENDERING,
+			claimed_by="other", priority=1)
+		job = TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.RENDERING,
+			claimed_by="w", priority=1)
+		want(11, 3, 4)
+
+		def other_finishes(seconds):
+			build.store(12, 7, 9, town(), 8)
+			TileState.objects.filter(pk=other.pk).update(status=TileState.DONE)
+		with mock.patch(READ) as read, mock.patch("tiles.management.commands.render_tiles.time.sleep",
+				side_effect=other_finishes) as sleep:
+			build_dependencies(job, build.tiles_beneath(11, 3, 4, 12), "w")
+		sleep.assert_called_once()
+		read.assert_not_called()  # it built none: it waited
 
 	def test_rendering_from_map_data_builds_the_base_summary(self):
 		want(12, 5, 6)
@@ -83,25 +162,26 @@ class JobTests(TestCase):
 		self.assertEqual(build.missing([(10, 0, 0)]), [])
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, TILE_REQUEST_WAIT=0.2)
+@override_settings(TILE_ZOOMS=ZOOMS, TILE_REQUEST_WAIT=0.2, CASCADE_MIN_ZOOM=10)
 class PlaceholderTests(TestCase):
-	def test_coarse_tile_without_its_summaries_is_a_placeholder(self):
-		response = self.client.get("/tiles/10/0/0.pbf")
+	def queued(self, path):
+		with mock.patch("tiles.views.queue.wait_for_render", wraps=queue.wait_for_render) as wait:
+			response = self.client.get(path)
+		return response, wait.called
+
+	def test_at_or_above_cascade_min_zoom_a_tile_is_queued_with_its_summaries_missing(self):
+		response, queued = self.queued("/tiles/10/0/0.pbf")
+		self.assertEqual(response.status_code, 503)  # waited; no renderer in the test
+		self.assertTrue(queued)
+		self.assertFalse(TileState.objects.filter(kind=TileState.SUMMARY).exists())  # the renderer builds them
+
+	@override_settings(CASCADE_MIN_ZOOM=11)
+	def test_below_it_a_placeholder_even_with_its_summaries_built(self):
+		build.store(10, 0, 0, pyo5m.OsmData(), 3)
+		response, queued = self.queued("/tiles/10/0/0.pbf")
 		self.assertEqual((response.status_code, response["X-Tile-Status"]), (204, "placeholder"))
 		self.assertEqual(response["Cache-Control"], "no-store")
+		self.assertFalse(queued)
 		tile = TileState.objects.get()
 		self.assertEqual((tile.kind, tile.status, tile.request_count), (TileState.TILE, TileState.DONE, 1))
-		# Nothing queued: no summary jobs, and no request left waiting
-		self.assertFalse(TileState.objects.filter(kind=TileState.SUMMARY).exists())
 		self.assertFalse(TileRequest.objects.exists())
-
-	def test_a_tile_from_base_summaries_not_all_built_is_a_placeholder(self):
-		response = self.client.get("/tiles/11/3/4.pbf")
-		self.assertEqual((response.status_code, response["X-Tile-Status"]), (204, "placeholder"))
-
-	def test_coarse_tile_waits_for_a_renderer_once_its_summaries_are_built(self):
-		build.store(10, 0, 0, pyo5m.OsmData(), 3)  # z10 is drawn from its own level-10 summary
-		with mock.patch("tiles.views.queue.wait_for_render", wraps=queue.wait_for_render) as wait:
-			response = self.client.get("/tiles/10/0/0.pbf")
-		self.assertEqual(response.status_code, 503)  # waited; no renderer in the test
-		wait.assert_called_once()
