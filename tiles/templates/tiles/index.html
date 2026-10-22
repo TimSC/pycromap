@@ -47,7 +47,10 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		    center: [(Number(bounds[0])+Number(bounds[2]))/2,
 			         (Number(bounds[1])+Number(bounds[3]))/2], // starting position [lng, lat]
 		    zoom: 13, // starting zoom
-		    maxZoom: data['viewer_maxzoom'] // beyond the tiles served, they are scaled up
+		    maxZoom: data['viewer_maxzoom'], // beyond the tiles served, they are scaled up
+		    // The view is kept in the address as #zoom/lat/lon: a link like
+		    // #14/50.8/-1.09 opens there, and moving the map updates it
+		    hash: true
 		});
 		map.addControl(new maplibregl.NavigationControl());
 		map.addControl(new maplibregl.AttributionControl({ compact: false, customAttribution:

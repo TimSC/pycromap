@@ -179,10 +179,15 @@ def cached_tile(request, path):
 	if not os.path.isfile(full):
 		raise Http404()
 	response = _gzipped_tile(FileResponse(open(full, "rb"), content_type=MVT_CONTENT_TYPE))
-	first = path.split("/")[0]
-	if first == queue.SHARED_DIR:
+	first, name = path.split("/")[0], path.split("/")[-1][:-len(".pbf.gz")]
+	if first == queue.SHARED_DIR or (first == queue.COMMON_DIR and len(name) == 32):
 		# Named by its content, so a name never has other content: kept for good
 		response["Cache-Control"] = "public, max-age=31536000, immutable"
+		return response
+	if first == queue.COMMON_DIR:
+		# A common tile named for what it shows, which a new tilemaker profile
+		# could change: kept a day
+		response["Cache-Control"] = "public, max-age=86400"
 		return response
 	# The name has the version in it, so a rendering of a given version never
 	# changes; but a re-rendering at the same version (a new tilemaker profile)

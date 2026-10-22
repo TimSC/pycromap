@@ -6,10 +6,8 @@ import os
 import subprocess
 import tempfile
 
-import mapbox_vector_tile
 import pyo5m
 from django.conf import settings
-from shapely.geometry import box, shape
 
 from mapdata.reader import read_area
 
@@ -20,34 +18,6 @@ logger = logging.getLogger(__name__)
 
 class RenderError(Exception):
 	pass
-
-
-def shared_kind(tile):
-	"""What a rendered tile (gzipped or not) is, if it is the same as many
-	others are: "empty", with nothing drawn, as over land with nothing mapped,
-	or "uniform", one feature covering the whole of it, as over open sea. None
-	for anything else, or what can't be read as a vector tile. Tiles of a
-	kind with the same content can share one file (see queue.finish)."""
-	if not tile:
-		return "empty"
-	try:
-		raw = gzip.decompress(tile) if tile[:2] == b"\x1f\x8b" else tile
-		layers = mapbox_vector_tile.decode(raw, default_options={"y_coord_down": True})
-	except Exception:
-		return None
-	features = [(layer["extent"], f) for layer in layers.values() for f in layer["features"]]
-	if not features:
-		return "empty"
-	if len(features) != 1:
-		return None
-	extent, feature = features[0]
-	try:
-		geometry = shape(feature["geometry"])
-		if geometry.geom_type in ("Polygon", "MultiPolygon") and geometry.covers(box(0, 0, extent, extent)):
-			return "uniform"
-	except Exception:
-		pass
-	return None
 
 
 def run_tilemaker(input_path, zoom, x, y, output_dir):

@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from tiles import queue
 from tiles.models import TileState
-from tiles.render import shared_kind
+from tiles.common import NAME_LENGTH, content_hash, describe, file_name
 
 
 class QueueTests(TestCase):
@@ -79,25 +79,37 @@ class QueueTests(TestCase):
 		tile = TileState.objects.get()
 		self.assertEqual((tile.file, tile.data), ("", None))
 
-	def test_tiles_the_same_as_many_share_a_file(self):
-		sea = vector_tile([{"geometry": "POLYGON ((-64 -64, 4160 -64, 4160 4160, -64 4160, -64 -64))",
-			"properties": {"class": "ocean"}}], "water")
+	def test_common_contents_point_at_their_file(self):
+		sea = vector_tile([{"geometry": CommonTileTests.whole, "properties": {"class": "ocean"}}], "water")
 		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
-			for x, data in ((1, sea), (2, gzip.compress(gzip.decompress(sea))), (3, b""), (4, b"")):
+			# Chosen by hand: a file in the common folder
+			(Path(cache) / "common").mkdir()
+			(Path(cache) / "common" / "sea.pbf.gz").write_bytes(gzip.compress(gzip.decompress(sea), mtime=0))
+			(Path(cache) / "common" / "land.pbf.gz").write_bytes(gzip.compress(b""))
+			for x, data in ((1, sea), (2, gzip.compress(gzip.decompress(sea))), (3, b""), (4, b"tile")):
 				queue.request_tile(12, x, 2, rerender=True)
 				queue.finish(queue.claim_next("a"), data, 7, 0.5, cached=True)
 			files = dict(TileState.objects.values_list("x", "file"))
-			# Sea twice, gzipped at different times: one file; empty: another
-			self.assertEqual(files[1], files[2])
-			self.assertEqual(files[3], files[4])
-			self.assertNotEqual(files[1], files[3])
-			self.assertTrue(all(f.startswith("shared/") for f in files.values()))
-			self.assertEqual(gzip.decompress((Path(cache) / files[1]).read_bytes()), gzip.decompress(sea))
-			self.assertEqual(gzip.decompress((Path(cache) / files[3]).read_bytes()), b"")
-			# A tile that changes from sea to its own content leaves the shared file
+			# Sea, gzipped at different times: its common file; nothing: land;
+			# anything else: a file of its own
+			self.assertEqual((files[1], files[2], files[3], files[4]),
+				("common/sea.pbf.gz", "common/sea.pbf.gz", "common/land.pbf.gz", "12/4/2.7.pbf.gz"))
+			# A tile that changes from sea to its own content leaves the common file
 			queue.request_tile(12, 1, 2, rerender=True)
-			queue.finish(queue.claim_next("a"), b"tile", 8, 0.5, cached=True)
-			self.assertTrue((Path(cache) / files[2]).exists())
+			queue.finish(queue.claim_next("a"), b"other", 8, 0.5, cached=True)
+			self.assertTrue((Path(cache) / "common" / "sea.pbf.gz").exists())
+			# Nothing is common without a common folder
+			(Path(cache) / "common" / "sea.pbf.gz").unlink()
+			(Path(cache) / "common" / "land.pbf.gz").unlink()
+			queue.request_tile(12, 1, 2, rerender=True)
+			queue.finish(queue.claim_next("a"), sea, 9, 0.5, cached=True)
+			self.assertEqual(TileState.objects.get(x=1).file, "12/1/2.9.pbf.gz")
+
+	def test_an_empty_tile_with_no_common_land_has_no_file(self):
+		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
+			queue.request_tile(12, 1, 2, rerender=True)
+			queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=True)
+			self.assertEqual(TileState.objects.get().file, "")
 
 	@override_settings(RENDER_LEASE=60)
 	def test_abandoned_claims_are_requeued(self):
@@ -114,17 +126,36 @@ def vector_tile(features, layer="water"):
 		default_options={"y_coord_down": True, "extents": 4096}))
 
 
-class SharedKindTests(SimpleTestCase):
+class CommonTileTests(SimpleTestCase):
 	whole = "POLYGON ((-64 -64, 4160 -64, 4160 4160, -64 4160, -64 -64))"
 
-	def test_kinds(self):
-		self.assertEqual(shared_kind(b""), "empty")
-		self.assertEqual(shared_kind(vector_tile([])), "empty")
-		self.assertEqual(shared_kind(vector_tile([{"geometry": self.whole, "properties": {"class": "ocean"}}])), "uniform")
-		# Not the whole tile, more than one thing, or not a tile
-		self.assertIsNone(shared_kind(vector_tile([{"geometry": "POLYGON ((0 0, 2000 0, 2000 4096, 0 4096, 0 0))",
-			"properties": {}}])))
-		self.assertIsNone(shared_kind(vector_tile([{"geometry": self.whole, "properties": {}},
-			{"geometry": "POINT (10 10)", "properties": {"name": "buoy"}}])))
-		self.assertIsNone(shared_kind(vector_tile([{"geometry": "LINESTRING (0 0, 4096 4096)", "properties": {}}])))
-		self.assertIsNone(shared_kind(b"tile"))
+	def name(self, features, layer="water"):
+		return describe(gzip.decompress(vector_tile(features, layer)))
+
+	def test_names(self):
+		ocean = {"class": "ocean"}
+		top = "POLYGON ((-64 -64, 4160 -64, 4160 1500, -64 1500, -64 -64))"
+		bottom = "POLYGON ((-64 1400, 4160 1400, 4160 4160, -64 4160, -64 1400))"
+		self.assertEqual(describe(b""), "land")
+		self.assertEqual(self.name([]), "land")
+		self.assertEqual(self.name([{"geometry": self.whole, "properties": ocean}]), "sea")
+		self.assertEqual(self.name([{"geometry": top, "properties": ocean}, {"geometry": bottom, "properties": ocean}]),
+			"sea-2poly")
+		self.assertEqual(self.name([{"geometry": top, "properties": ocean}]), "sea-part")
+		self.assertEqual(self.name([{"geometry": self.whole, "properties": {"class": "national_park"}}], "park"), "park")
+		self.assertEqual(self.name([{"geometry": "LINESTRING (0 0, 0 4096)", "properties": {"admin_level": 2}}],
+			"boundary"), "boundary")
+		# Anything else has no name: the ocean with something on it, or a lake
+		self.assertIsNone(self.name([{"geometry": self.whole, "properties": ocean},
+			{"geometry": "POINT (10 10)", "properties": {"name": "buoy"}}]))
+		self.assertIsNone(self.name([{"geometry": self.whole, "properties": {"class": "lake"}}]))
+		self.assertIsNone(describe(b"tile"))
+
+	def test_file_names(self):
+		sea = gzip.decompress(vector_tile([{"geometry": self.whole, "properties": {"class": "ocean"}}]))
+		self.assertEqual(file_name(sea), "sea.pbf.gz")
+		# A name already taken, or none to be had: the hash
+		self.assertEqual(file_name(sea, {"sea"}), content_hash(sea) + ".pbf.gz")
+		self.assertEqual(len(content_hash(b"tile")), 32)
+		self.assertEqual(file_name(b"tile"), content_hash(b"tile") + ".pbf.gz")
+		self.assertTrue(all(len(describe(x) or "") <= NAME_LENGTH for x in (b"", sea)))
