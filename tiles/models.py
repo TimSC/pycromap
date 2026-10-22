@@ -106,3 +106,28 @@ class TileSweep(models.Model):
 
 	def __str__(self):
 		return "sweep {} {}/{}".format(self.kind, self.zoom, self.y)
+
+
+class TileRequest(models.Model):
+	"""A request for a tile being answered: made when it comes, deleted when it
+	is answered. One whose client went away first (Django cancels the view)
+	is kept, flagged cancelled, for CANCELLED_REQUEST_KEEP seconds; one left
+	unanswered longer than a request waits (TILE_REQUEST_WAIT), as by a server
+	that stopped, is deleted too (see queue.forget_requests). Only kept, for
+	now: nothing about the render queue depends on it."""
+
+	zoom = models.PositiveSmallIntegerField()
+	x = models.PositiveIntegerField()
+	y = models.PositiveIntegerField()
+	started_at = models.DateTimeField(auto_now_add=True)
+	cancelled = models.BooleanField(default=False)
+	cancelled_at = models.DateTimeField(null=True, blank=True)
+
+	class Meta:
+		indexes = [
+			models.Index(fields=["cancelled_at"], name="tilerequest_cancelled"),
+			models.Index(fields=["started_at"], name="tilerequest_started"),
+		]
+
+	def __str__(self):
+		return "request {}/{}/{}{}".format(self.zoom, self.x, self.y, " (cancelled)" if self.cancelled else "")

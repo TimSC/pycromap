@@ -10,7 +10,7 @@ from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from tiles.management.commands.render_tiles import render_one
-from tiles.models import TileState
+from tiles.models import TileRequest, TileState
 
 
 class TileViewTests(TransactionTestCase):
@@ -247,46 +247,68 @@ class PageTests(TransactionTestCase):
 
 
 @override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True}}, TILE_REQUEST_WAIT=30, EDIT_CHECK_INTERVAL=0)
-class CancelledRequestTests(TransactionTestCase):
-	"""A client going away while its tile is rendered: Django cancels the view."""
+class TileRequestTests(TransactionTestCase):
+	"""Requests are kept while they are answered; one whose client goes away
+	(Django cancels the view) is flagged, and kept a while."""
 
-	def test_a_waiting_tile_is_left_for_later(self):
+	def view(self, *args):
+		from django.test import RequestFactory
+		from tiles import views
+		return views.tile(RequestFactory().get("/tiles/12/1/2.pbf"), *args)
+
+	def test_an_answered_request_is_not_kept(self):
 		import asyncio
-		from tiles import idle, views
+		with override_settings(TILE_REQUEST_WAIT=0.1):
+			response = asyncio.run(self.view(12, 1, 2))
+		self.assertEqual(response.status_code, 503)  # not rendered in time: answered all the same
+		self.assertFalse(TileRequest.objects.exists())
+
+	def test_a_request_whose_client_goes_is_flagged(self):
+		import asyncio
 
 		async def ask_then_go():
-			task = asyncio.create_task(views._obtain(12, 1, 2, {"source": "data", "cache": True}))
-			# Queued, and waiting for a renderer, when the client goes
+			task = asyncio.create_task(self.view(12, 1, 2))
+			# Waiting for a renderer when the client goes
 			for _ in range(100):
 				await asyncio.sleep(0.05)
 				if await TileState.objects.filter(status=TileState.QUEUED).aexists():
 					break
+			self.assertTrue(await TileRequest.objects.filter(cancelled=False).aexists())
 			task.cancel()
 			with self.assertRaises(asyncio.CancelledError):
 				await task
 
 		asyncio.run(ask_then_go())
+		request = TileRequest.objects.get()
+		self.assertEqual((request.zoom, request.x, request.y, request.cancelled), (12, 1, 2, True))
+		self.assertIsNotNone(request.cancelled_at)
+		# The render queue is as it was: still queued, at the request's priority
 		tile = TileState.objects.get()
-		# Still to be rendered, after the requests still waiting
-		self.assertEqual((tile.status, tile.priority), (TileState.QUEUED, idle.IDLE_PRIORITY))
+		self.assertEqual(tile.status, TileState.QUEUED)
+		self.assertGreater(tile.priority, 0)
 
-	def test_only_a_tile_nobody_else_wants_now(self):
-		from tiles import idle, queue
-		tile, _ = queue.request_tile(12, 1, 2, rerender=True)
-		first = tile.requested_at
-		# Asked for again since: the later request still wants it
-		queue.request_tile(12, 1, 2, rerender=False)
-		self.assertFalse(queue.give_up(tile.pk, first))
-		later = TileState.objects.get().requested_at
-		self.assertTrue(queue.give_up(tile.pk, later))
-		self.assertEqual(TileState.objects.get().priority, idle.IDLE_PRIORITY)
-		# Another request puts it back in front
-		queue.request_tile(12, 1, 2, rerender=False)
-		self.assertGreater(TileState.objects.get().priority, 0)
+	def test_a_request_that_fails_is_not_kept(self):
+		import asyncio
+		with mock.patch("tiles.views._answer", side_effect=RuntimeError("broken")):
+			with self.assertRaises(RuntimeError):
+				asyncio.run(self.view(12, 1, 2))
+		self.assertFalse(TileRequest.objects.exists())
 
-	def test_a_tile_being_rendered_is_left_alone(self):
+	@override_settings(CANCELLED_REQUEST_KEEP=600, TILE_REQUEST_WAIT=300)
+	def test_requests_are_forgotten_after_a_while(self):
 		from tiles import queue
-		tile, _ = queue.request_tile(12, 1, 2, rerender=True)
-		queue.claim_next("w")
-		self.assertFalse(queue.give_up(tile.pk, tile.requested_at))
-		self.assertGreater(TileState.objects.get().priority, 0)
+		now = timezone.now()
+
+		def request(y, started, cancelled=None):
+			made = TileRequest.objects.create(zoom=12, x=1, y=y, cancelled=cancelled is not None,
+				cancelled_at=None if cancelled is None else now - timedelta(seconds=cancelled))
+			# started_at is set as it is made
+			TileRequest.objects.filter(pk=made.pk).update(started_at=now - timedelta(seconds=started))
+			return made.pk
+
+		request(1, 700, cancelled=601)                  # cancelled too long ago
+		recent = request(2, 700, cancelled=599)         # cancelled, kept a while yet
+		request(3, 301)                                 # unanswered for longer than a request waits
+		answering = request(4, 299)                     # still being answered
+		self.assertEqual(queue.forget_requests(), 2)
+		self.assertEqual(set(TileRequest.objects.values_list("pk", flat=True)), {recent, answering})

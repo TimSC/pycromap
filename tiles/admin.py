@@ -5,8 +5,26 @@ changed or deleted."""
 from django.contrib import admin
 from django.db.models import Count
 
-from .models import TileState
+from .models import TileRequest, TileState
 from . import queue
+
+
+@admin.register(TileRequest)
+class TileRequestAdmin(admin.ModelAdmin):
+	"""The requests being answered, and those whose clients went away (kept
+	CANCELLED_REQUEST_KEEP seconds)."""
+	list_display = ("__str__", "started_at", "cancelled", "cancelled_at")
+	list_filter = ("cancelled", "zoom")
+	ordering = ("-started_at",)
+	readonly_fields = ("zoom", "x", "y", "started_at", "cancelled", "cancelled_at")
+	fields = readonly_fields
+	actions = None
+
+	def has_add_permission(self, request):
+		return False
+
+	def has_delete_permission(self, request, obj=None):
+		return False
 
 
 @admin.register(TileState)

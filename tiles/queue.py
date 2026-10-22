@@ -17,7 +17,7 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.utils import timezone
 
-from .models import TileState
+from .models import TileRequest, TileState
 from .common import COMMON_DIR, common_file
 
 # Where tiles that many others were the same as were kept, under
@@ -121,15 +121,17 @@ async def await_tile(tile_id, queued_at, timeout):
 		await asyncio.sleep(0.05)
 
 
-def give_up(tile_id, requested_at):
-	"""The client that asked for a tile has gone before it was rendered: if it
-	is still waiting for a renderer, and nobody has asked for it since (its
-	requested_at is the request's), it waits as idle work does (see
-	tiles.idle), so the renderers see to the requests still waiting first.
-	Another request for it puts it back in front. Returns whether it was."""
-	from .idle import IDLE_PRIORITY
-	return bool(TileState.objects.filter(pk=tile_id, status=TileState.QUEUED, requested_at=requested_at,
-		priority__gte=0).update(priority=IDLE_PRIORITY))
+def forget_requests():
+	"""Deletes the requests flagged cancelled more than CANCELLED_REQUEST_KEEP
+	seconds ago, and those that started more than TILE_REQUEST_WAIT seconds
+	ago and are still there, which no request being answered can be: left by
+	a server that stopped while answering (see TileRequest). Returns how
+	many."""
+	now = timezone.now()
+	cancelled = TileRequest.objects.filter(cancelled_at__lt=now - timedelta(seconds=settings.CANCELLED_REQUEST_KEEP))
+	unanswered = TileRequest.objects.filter(cancelled=False,
+		started_at__lt=now - timedelta(seconds=settings.TILE_REQUEST_WAIT))
+	return cancelled.delete()[0] + unanswered.delete()[0]
 
 
 def requeue_abandoned():

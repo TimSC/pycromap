@@ -142,9 +142,16 @@ class Command(BaseCommand):
 		idle_work = settings.RENDER_IDLE_WORK and not once
 		self.stdout.write("Rendering as {}{}".format(name,
 			", working ahead when idle" if idle_work else ""))
+		forgotten = 0.0  # when cancelled requests were last cleared out
 		try:
 			while not stop.is_set():
 				close_old_connections()
+				# Requests whose clients went away are kept a while, and
+				# those left unanswered too long are dropped; cleared out at
+				# most once a minute, busy or not
+				if time.monotonic() - forgotten > 60:
+					queue.forget_requests()
+					forgotten = time.monotonic()
 				if render_one(name):
 					# Top up the idle work while there is still some, so that
 					# the fleet renders on while one of them plans

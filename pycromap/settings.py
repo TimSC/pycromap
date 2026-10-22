@@ -239,6 +239,10 @@ TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 # server, uvicorn, sets requests no time limit of its own.
 TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
+# Seconds a request whose client went away is kept, flagged cancelled (see
+# tiles.models.TileRequest), before the renderers' housekeeping deletes it
+CANCELLED_REQUEST_KEEP = float(env("CANCELLED_REQUEST_KEEP", "600"))
+
 # Seconds after a cached tile was rendered, or last found unedited, before a
 # request for it asks the map database again whether its area has been edited
 # (see "check_edits" in TILE_ZOOMS): an edit shows within this long, and a

@@ -20,7 +20,7 @@ from summaries import build as summaries
 
 from . import queue
 from .crop import crop
-from .models import TileState
+from .models import TileRequest, TileState
 from .tilegeo import tile_area, valid_tile
 
 logger = logging.getLogger(__name__)
@@ -131,22 +131,14 @@ def _ask_for(zoom, x, y, config):
 
 async def _obtain(zoom, x, y, config):
 	"""A tile, rendered if need be: (its state, None), or (None, the response
-	to give instead: a placeholder, or that it isn't ready yet).
-
-	Waiting for the renderer holds no thread, and if the client goes away
-	meanwhile (Django cancels the view), the tile is left for the renderers
-	to come to after the requests still waiting (queue.give_up)."""
+	to give instead: a placeholder, or that it isn't ready yet). Waiting for
+	the renderer holds no thread."""
 	tile, queued_at, response = await _ask_for(zoom, x, y, config)
 	if response is not None:
 		return None, response
 	if queued_at is None:
 		return tile, None
-	try:
-		ready = await queue.await_tile(tile.pk, queued_at, settings.TILE_REQUEST_WAIT)
-	except asyncio.CancelledError:
-		# Shielded, so that it is done though the view is being cancelled
-		await asyncio.shield(sync_to_async(queue.give_up)(tile.pk, tile.requested_at))
-		raise
+	ready = await queue.await_tile(tile.pk, queued_at, settings.TILE_REQUEST_WAIT)
 	if ready is None:
 		response = _no_store(HttpResponse("The tile is not ready", status=503, content_type="text/plain"))
 		response["Retry-After"] = "2"
@@ -168,12 +160,32 @@ def _tile_data(tile, cached):
 async def tile(request, zoom, x, y):
 	"""A tile. Asynchronous, so that waiting for the renderer holds no thread,
 	and so that Django can cancel it when the client goes away, as a map does
-	with the tiles it no longer shows (see _obtain); under ASGI, that is.
-	"""
+	with the tiles it no longer shows; under ASGI, that is.
+
+	Each request is kept as a TileRequest while it is answered: deleted once
+	it is (whatever the answer), or flagged cancelled if the client goes away
+	first, to be deleted later (queue.forget_requests)."""
 	config = queue.zoom_config(zoom)
 	if config is None or not valid_tile(zoom, x, y):
 		raise Http404("Zoom {} is not served".format(zoom))
 
+	tracked = await TileRequest.objects.acreate(zoom=zoom, x=x, y=y)
+	try:
+		response = await _answer(config, zoom, x, y)
+	except asyncio.CancelledError:
+		# Shielded, so that it is done though the view is being cancelled
+		await asyncio.shield(TileRequest.objects.filter(pk=tracked.pk).aupdate(
+			cancelled=True, cancelled_at=timezone.now()))
+		raise
+	except BaseException:
+		await asyncio.shield(TileRequest.objects.filter(pk=tracked.pk).adelete())
+		raise
+	await TileRequest.objects.filter(pk=tracked.pk).adelete()
+	return response
+
+
+async def _answer(config, zoom, x, y):
+	"""The response to a request for a tile of a served zoom."""
 	if config["source"] == "crop":
 		# Cut from the tile covering it at a lower zoom, which is obtained as
 		# a request for that tile would be
