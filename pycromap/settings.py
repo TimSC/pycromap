@@ -80,8 +80,6 @@ TEMPLATES = [
 	},
 ]
 
-WSGI_APPLICATION = "pycromap.wsgi.application"
-
 # Seconds each part of rendering a tile may take: each query of the map
 # database, and tilemaker
 RENDER_TIMEOUT = int(env("RENDER_TIMEOUT", "600"))
@@ -238,8 +236,7 @@ TILE_CACHE_DIR = Path(env("TILE_CACHE_DIR", str(BASE_DIR / "tilecache")))
 TILE_CACHE_URL = env("TILE_CACHE_URL", "/tilecache/")
 
 # Seconds a tile request waits for the renderer before giving up. The web
-# server must let a request run this long (see WEB_TIMEOUT in
-# docker-compose.yml).
+# server, uvicorn, sets requests no time limit of its own.
 TILE_REQUEST_WAIT = float(env("TILE_REQUEST_WAIT", "600"))
 
 # Seconds after a cached tile was rendered, or last found unedited, before a

@@ -244,3 +244,49 @@ class PageTests(TransactionTestCase):
 		style = self.client.get("/style.json").json()
 		self.assertEqual(style["sources"]["openmaptiles"]["url"], "/spec.json")
 		self.assertTrue(style["glyphs"].startswith("/static/tiles/fonts/"))
+
+
+@override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True}}, TILE_REQUEST_WAIT=30, EDIT_CHECK_INTERVAL=0)
+class CancelledRequestTests(TransactionTestCase):
+	"""A client going away while its tile is rendered: Django cancels the view."""
+
+	def test_a_waiting_tile_is_left_for_later(self):
+		import asyncio
+		from tiles import idle, views
+
+		async def ask_then_go():
+			task = asyncio.create_task(views._obtain(12, 1, 2, {"source": "data", "cache": True}))
+			# Queued, and waiting for a renderer, when the client goes
+			for _ in range(100):
+				await asyncio.sleep(0.05)
+				if await TileState.objects.filter(status=TileState.QUEUED).aexists():
+					break
+			task.cancel()
+			with self.assertRaises(asyncio.CancelledError):
+				await task
+
+		asyncio.run(ask_then_go())
+		tile = TileState.objects.get()
+		# Still to be rendered, after the requests still waiting
+		self.assertEqual((tile.status, tile.priority), (TileState.QUEUED, idle.IDLE_PRIORITY))
+
+	def test_only_a_tile_nobody_else_wants_now(self):
+		from tiles import idle, queue
+		tile, _ = queue.request_tile(12, 1, 2, rerender=True)
+		first = tile.requested_at
+		# Asked for again since: the later request still wants it
+		queue.request_tile(12, 1, 2, rerender=False)
+		self.assertFalse(queue.give_up(tile.pk, first))
+		later = TileState.objects.get().requested_at
+		self.assertTrue(queue.give_up(tile.pk, later))
+		self.assertEqual(TileState.objects.get().priority, idle.IDLE_PRIORITY)
+		# Another request puts it back in front
+		queue.request_tile(12, 1, 2, rerender=False)
+		self.assertGreater(TileState.objects.get().priority, 0)
+
+	def test_a_tile_being_rendered_is_left_alone(self):
+		from tiles import queue
+		tile, _ = queue.request_tile(12, 1, 2, rerender=True)
+		queue.claim_next("w")
+		self.assertFalse(queue.give_up(tile.pk, tile.requested_at))
+		self.assertGreater(TileState.objects.get().priority, 0)

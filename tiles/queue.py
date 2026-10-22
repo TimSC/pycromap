@@ -7,6 +7,7 @@ they are built. A claim is a compare-and-set update,
 so any number of renderers can share the queue, even on SQLite.
 """
 
+import asyncio
 import os
 import time
 from datetime import timedelta
@@ -105,6 +106,30 @@ def wait_for_tile(tile_id, queued_at, timeout):
 		if tile.status == TileState.FAILED or time.monotonic() >= deadline:
 			return None
 		time.sleep(0.05)
+
+
+async def await_tile(tile_id, queued_at, timeout):
+	"""As wait_for_tile, for an async view: it waits without holding a thread,
+	and is cancelled with the request if the client goes away."""
+	deadline = time.monotonic() + timeout
+	while True:
+		tile = await TileState.objects.defer("data").aget(pk=tile_id)
+		if tile.status == TileState.DONE and tile.rendered_at and tile.rendered_at >= queued_at:
+			return await TileState.objects.aget(pk=tile_id)
+		if tile.status == TileState.FAILED or time.monotonic() >= deadline:
+			return None
+		await asyncio.sleep(0.05)
+
+
+def give_up(tile_id, requested_at):
+	"""The client that asked for a tile has gone before it was rendered: if it
+	is still waiting for a renderer, and nobody has asked for it since (its
+	requested_at is the request's), it waits as idle work does (see
+	tiles.idle), so the renderers see to the requests still waiting first.
+	Another request for it puts it back in front. Returns whether it was."""
+	from .idle import IDLE_PRIORITY
+	return bool(TileState.objects.filter(pk=tile_id, status=TileState.QUEUED, requested_at=requested_at,
+		priority__gte=0).update(priority=IDLE_PRIORITY))
 
 
 def requeue_abandoned():

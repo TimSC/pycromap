@@ -1,7 +1,9 @@
 # The web application, the renderer and the admin
 django==6.1.2
-# The web server in docker-compose.yml
-gunicorn==26.2.0
+# The web server: uvicorn, running the ASGI application, so that a tile
+# request waiting for the renderer holds no thread, and is cancelled when its
+# client goes away
+uvicorn==0.32.0
 # Summaries: running summary.lua, and simplifying geometry
 lupa==2.8
 shapely==2.2.0

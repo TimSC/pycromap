@@ -1,8 +1,10 @@
+import asyncio
 import json
 import logging
 import os
 from pathlib import Path
 
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib.staticfiles import finders
 from django.db import DatabaseError
@@ -113,22 +115,43 @@ def _needs_rendering(existing, config):
 	return False
 
 
-def _obtain(zoom, x, y, config):
-	"""A tile, rendered if need be: (its state, None), or (None, the response
-	to give instead: a placeholder, or that it isn't ready yet)."""
+@sync_to_async
+def _ask_for(zoom, x, y, config):
+	"""Records a request for a tile and queues it if it needs rendering:
+	(its state, when it was queued if it is waiting to be rendered, or None),
+	or (None, None, the response to give instead: a placeholder)."""
 	existing = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x=x, y=y).first()
 	rerender = _needs_rendering(existing, config)
 	if rerender and not _can_render(zoom, x, y, config):
 		queue.log_request(zoom, x, y)
-		return None, _placeholder()
+		return None, None, _placeholder()
 	tile, queued_at = queue.request_tile(zoom, x, y, rerender=rerender)
-	if queued_at is not None:
-		tile = queue.wait_for_tile(tile.pk, queued_at, settings.TILE_REQUEST_WAIT)
-		if tile is None:
-			response = _no_store(HttpResponse("The tile is not ready", status=503, content_type="text/plain"))
-			response["Retry-After"] = "2"
-			return None, response
-	return tile, None
+	return tile, queued_at, None
+
+
+async def _obtain(zoom, x, y, config):
+	"""A tile, rendered if need be: (its state, None), or (None, the response
+	to give instead: a placeholder, or that it isn't ready yet).
+
+	Waiting for the renderer holds no thread, and if the client goes away
+	meanwhile (Django cancels the view), the tile is left for the renderers
+	to come to after the requests still waiting (queue.give_up)."""
+	tile, queued_at, response = await _ask_for(zoom, x, y, config)
+	if response is not None:
+		return None, response
+	if queued_at is None:
+		return tile, None
+	try:
+		ready = await queue.await_tile(tile.pk, queued_at, settings.TILE_REQUEST_WAIT)
+	except asyncio.CancelledError:
+		# Shielded, so that it is done though the view is being cancelled
+		await asyncio.shield(sync_to_async(queue.give_up)(tile.pk, tile.requested_at))
+		raise
+	if ready is None:
+		response = _no_store(HttpResponse("The tile is not ready", status=503, content_type="text/plain"))
+		response["Retry-After"] = "2"
+		return None, response
+	return ready, None
 
 
 def _tile_data(tile, cached):
@@ -142,7 +165,11 @@ def _tile_data(tile, cached):
 
 
 @require_GET
-def tile(request, zoom, x, y):
+async def tile(request, zoom, x, y):
+	"""A tile. Asynchronous, so that waiting for the renderer holds no thread,
+	and so that Django can cancel it when the client goes away, as a map does
+	with the tiles it no longer shows (see _obtain); under ASGI, that is.
+	"""
 	config = queue.zoom_config(zoom)
 	if config is None or not valid_tile(zoom, x, y):
 		raise Http404("Zoom {} is not served".format(zoom))
@@ -154,16 +181,21 @@ def tile(request, zoom, x, y):
 		parent_config = queue.zoom_config(parent_zoom)
 		scale = 1 << (zoom - parent_zoom)
 		parent_x, parent_y = x // scale, y // scale
-		queue.log_request(zoom, x, y)
-		parent, response = _obtain(parent_zoom, parent_x, parent_y, parent_config)
+		await sync_to_async(queue.log_request)(zoom, x, y)
+		parent, response = await _obtain(parent_zoom, parent_x, parent_y, parent_config)
 		if response is not None:
 			return response
-		data = crop(_tile_data(parent, parent_config.get("cache", False)), parent_zoom, parent_x, parent_y, zoom, x, y)
+
+		def cut():
+			return crop(_tile_data(parent, parent_config.get("cache", False)), parent_zoom, parent_x, parent_y,
+				zoom, x, y)
+		# Decoding and cutting is CPU work: in a thread, off the event loop
+		data = await sync_to_async(cut, thread_sensitive=False)()
 		if not data:
 			return _no_store(HttpResponse(status=204))
 		return _no_store(_gzipped_tile(HttpResponse(data, content_type=MVT_CONTENT_TYPE)))
 
-	tile, response = _obtain(zoom, x, y, config)
+	tile, response = await _obtain(zoom, x, y, config)
 	if response is not None:
 		return response
 	return _respond(tile, config.get("cache", False))

@@ -74,10 +74,10 @@ Copy `.env.example` to `.env` and give it the pycrocosm database's details, then
 
 Run the web server and, alongside it, the renderer fleet: `RENDER_WORKERS` (8) renderers, each in its own process (rendering is CPU-bound, so more threads in one process would not help), supervised and replaced by `render_fleet` if they die:
 
-    venv/bin/python manage.py runserver
+    venv/bin/uvicorn pycromap.asgi:application --port 8000 --reload
     venv/bin/python manage.py render_fleet
 
-The map is at http://localhost:8000/. Tile states can be seen in the admin, at `/admin/` (`manage.py createsuperuser` first).
+The map is at http://localhost:8000/. The tile view is asynchronous: under an ASGI server, as uvicorn is, waiting for the renderer holds no thread, and when the client goes away, as a map does with the tiles it no longer shows, Django cancels the request, and a tile still waiting for a renderer is left until the requests still waiting have been seen to (and is put back in front if it is asked for again). `--reload` restarts it when the code changes, as for development. Tile states can be seen in the admin, at `/admin/` (`manage.py createsuperuser` first).
 
 Each renderer renders one job at a time; `RENDER_WORKERS` (8) of them, in separate processes, render that many at once. A tile claimed by a renderer that stops is given to another after `RENDER_LEASE` seconds, and a tile that fails `RENDER_ATTEMPTS` times is marked as failed until it is asked for again.
 
@@ -103,7 +103,7 @@ The map is then at http://localhost:8082/. Its view is kept in the address, as `
 
 The pycrocosm database's details come from `.env`, as without Docker, but the containers reach it at `host.docker.internal`, the machine running Docker, unless `PYCROMAP_DB_HOST` says otherwise. PostgreSQL there must accept connections from the Docker network. Set `COASTLINE_DIR` and `LANDCOVER_DIR` to where the shapefiles the profile reads are, if you have them.
 
-The web server is gunicorn, with `WEB_WORKERS` processes (16). Each handles one request at a time, so that is also how many tile requests can be waiting for the renderer at once. A request waits up to `TILE_REQUEST_WAIT` seconds (600); gunicorn's `WEB_TIMEOUT` (660) must be longer.
+The web server is uvicorn, with `WEB_WORKERS` processes (16), each of which can have many tile requests waiting for the renderer at once; a request is cancelled when its client goes away. A request waits up to `TILE_REQUEST_WAIT` seconds (600); uvicorn sets no time limit of its own.
 
 ## Tests
 

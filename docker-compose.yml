@@ -18,9 +18,10 @@
 # pyo5m is built from pycrocosm's extractupdate/pyo5m, beside this project,
 # unless PYO5M_SOURCE says where it is.
 #
-# The web server is gunicorn, with WEB_WORKERS processes (16). Each handles one
-# request at a time, and a tile request waits up to TILE_REQUEST_WAIT seconds
-# (600) for the renderer, so WEB_TIMEOUT (660) must be longer. Static files
+# The web server is uvicorn, with WEB_WORKERS processes (16), running the ASGI
+# application: a tile request waiting up to TILE_REQUEST_WAIT seconds (600)
+# for the renderer holds no thread, and is cancelled when the client goes
+# away, as a map does with tiles it no longer shows. Static files
 # and cached tiles are served by Django while DJANGO_DEBUG is on (the default).
 
 x-pycromap: &pycromap
@@ -69,9 +70,8 @@ services:
 
   web:
     <<: *pycromap
-    command: ["gunicorn", "pycromap.wsgi", "--bind", "0.0.0.0:8000",
-              "--workers", "${WEB_WORKERS:-16}", "--timeout", "${WEB_TIMEOUT:-660}",
-              "--access-logfile", "-"]
+    command: ["uvicorn", "pycromap.asgi:application", "--host", "0.0.0.0", "--port", "8000",
+              "--workers", "${WEB_WORKERS:-16}"]
     ports:
       - "${PYCROMAP_PORT:-8082}:8000"
     depends_on:
