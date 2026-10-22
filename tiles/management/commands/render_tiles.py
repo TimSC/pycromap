@@ -3,10 +3,11 @@ stopped (see tiles.queue).
 
 The process claims jobs one at a time: a tile from map data (reading it,
 building its summary if the zoom marks one, and running tilemaker-core), a
-tile from summaries that are all built already, or a summary from finer
-summaries that are. A job doesn't queue the summaries it needs, for now: a
-request for a tile whose summaries aren't all built gets a placeholder
-(tiles.views), and the idle renderers build the pyramid from the bottom. The work is CPU-bound Python, and threads
+tile from summaries, or a summary from finer summaries. A renderer that
+claims a requested tile at or above CASCADE_MIN_ZOOM builds the summaries it
+needs that are missing first (build_dependencies); below it, a request gets
+the cache or a placeholder (tiles.views), and the idle renderers build the
+pyramid from the bottom. The work is CPU-bound Python, and threads
 in one process share the interpreter's lock, so one process renders one job
 at a time: run `RENDER_WORKERS` (8) of them to render more.
 """

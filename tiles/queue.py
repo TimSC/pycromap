@@ -81,18 +81,27 @@ async def answered_by_cache(request_id):
 	await TileRequest.objects.filter(pk=request_id).aupdate(cache_redirect=True)
 
 
+# The longest a request waiting for its tile waits between looks
+AWAIT_POLL_MAX = 0.5
+
+
 async def await_render(request_id, timeout):
 	"""Waits, holding no thread, until a request's tile has been rendered.
 	Returns its status then, DONE or FAILED, or None if it wasn't in timeout
-	seconds. Cancelled with the request if the client goes away."""
+	seconds. Cancelled with the request if the client goes away. It looks
+	soon, then less and less often, up to every AWAIT_POLL_MAX seconds: a
+	quick rendering is answered at once, and many waiting for slow ones
+	don't keep the database busy."""
 	deadline = time.monotonic() + timeout
+	poll = 0.05
 	while True:
 		status = await TileRequest.objects.filter(pk=request_id).values_list("status", flat=True).afirst()
 		if status in (TileRequest.DONE, TileRequest.FAILED):
 			return status
 		if status is None or time.monotonic() >= deadline:
 			return None
-		await asyncio.sleep(0.05)
+		await asyncio.sleep(poll)
+		poll = min(poll * 1.5, AWAIT_POLL_MAX)
 
 
 def _answer_requests(tile, status):

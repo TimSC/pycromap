@@ -111,15 +111,16 @@ def _needs_rendering(existing, config):
 
 @sync_to_async
 def _ask_for(zoom, x, y, config, request_id):
-	"""Records a request for a tile, and if the tile needs rendering, queues
-	the request (queue.wait_for_render): (its state if it needn't be
+	"""If a tile needs rendering, records the request for it (queue.log_request)
+	and queues it (queue.wait_for_render): (its state if it needn't be
 	rendered, whether the request waits for a renderer, None), or (None,
-	False, the response to give instead: a placeholder)."""
+	False, the response to give instead: a placeholder). A request answered
+	from what is stored isn't recorded, so the commonest answer writes
+	nothing: the idle renderers work near the tiles that needed rendering."""
 	existing = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x=x, y=y).first()
-	rerender = _needs_rendering(existing, config)
-	queue.log_request(zoom, x, y)
-	if not rerender:
+	if not _needs_rendering(existing, config):
 		return existing, False, None
+	queue.log_request(zoom, x, y)
 	if not _can_render(zoom, x, y, config):
 		return None, False, _placeholder()
 	queue.wait_for_render(request_id)
