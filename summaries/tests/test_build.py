@@ -38,6 +38,13 @@ class FilterTests(TestCase):
 		self.assertIsNone(keep("way", {"natural": "water"}, 10, False))
 		self.assertIsNotNone(keep("relation", {"type": "multipolygon", "landuse": "forest"}, 6))
 
+	def test_coastlines_are_not_kept(self):
+		# The sea is drawn from the coastline shapefile, so OSM's coastline
+		# ways, open or closed, are left out
+		keep = summary_filter()
+		self.assertIsNone(keep("way", {"natural": "coastline"}, 12, False))
+		self.assertIsNone(keep("way", {"natural": "coastline"}, 12, True))
+
 
 class SimplifyTests(TestCase):
 	def test_straight_line_keeps_its_ends(self):

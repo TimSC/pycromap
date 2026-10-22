@@ -43,7 +43,7 @@ local landuse = set { "residential", "commercial", "industrial", "retail", "rail
 	"cemetery", "military", "quarry", "forest", "farmland", "meadow", "grass",
 	"orchard", "vineyard", "allotments", "recreation_ground", "village_green" }
 local natural = set { "water", "wood", "scrub", "grassland", "heath", "wetland",
-	"beach", "sand", "bare_rock", "scree", "coastline", "bay" }
+	"beach", "sand", "bare_rock", "scree", "bay" }
 local leisure = set { "park", "nature_reserve", "golf_course", "garden" }
 local waterways = { [12] = set { "river", "canal" }, [10] = set { "river", "canal" },
 	[8] = set { "river" }, [6] = set { "river" } }
@@ -82,7 +82,9 @@ function way_filter(tags, level, closed)
 	-- Main lines only
 	if tags.railway == "rail" and tags.service == nil then return keep(tags) end
 	if tags.waterway and waterways[level][tags.waterway] then return keep(tags) end
-	if tags.natural == "coastline" then return keep(tags) end
+	-- Not coastlines: the sea and land are drawn from the coastline
+	-- shapefile, not OSM's coastline ways, which (long, and kept whole) were
+	-- most of what coastal summaries held
 	if admin_boundary(tags, level) then return keep(tags) end
 	if closed and area(tags) then return keep(tags) end
 	return nil
