@@ -1,4 +1,6 @@
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 
 import pyo5m
 from django.test import TestCase, override_settings
@@ -64,6 +66,20 @@ class PlanTests(TestCase):
 		for job in TileState.objects.filter(idle=True):
 			self.assertTrue(max(abs(job.x - 100), abs(job.y - 100)) <= 1
 				or (job.x, job.y) == (0, 0))
+
+
+class MissingFileTests(TestCase):
+	def test_a_tile_whose_file_is_gone_is_planned_again(self):
+		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache), IDLE_RADIUS=0,
+				TILE_ZOOMS={12: {"source": "data", "cache": True, "summary": True}}):
+			TileState.objects.create(kind=TileState.TILE, zoom=12, x=100, y=100, status=TileState.DONE,
+				request_count=1, requested_at=timezone.now(), rendered_at=timezone.now(), file="12/100/100.1.pbf.gz")
+			build.store(12, 100, 100, pyo5m.OsmData(), 1)
+			# Rendered, by the database, but its file was deleted from the cache
+			self.assertIn((TileState.TILE, 12, 100, 100), idle.plan(1, "w"))
+			(Path(cache) / "12/100").mkdir(parents=True)
+			(Path(cache) / "12/100/100.1.pbf.gz").write_bytes(b"tile")
+			self.assertNotIn((TileState.TILE, 12, 100, 100), idle.plan(1, "w"))
 
 
 @override_settings(TILE_ZOOMS=TZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200)

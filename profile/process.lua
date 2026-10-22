@@ -808,7 +808,9 @@ end
 
 -- Remap coastlines
 function attribute_function(attr,layer)
-	if attr["featurecla"]=="Antarctic Ice Shelf" then
+	if attr["featurecla"]=="Glaciated areas" then
+		return { subclass="glacier" }
+	elseif attr["featurecla"]=="Antarctic Ice Shelf" then
 		return { subclass="ice_shelf" }
 	elseif attr["featurecla"]=="Urban area" then
 		return { class="residential" }

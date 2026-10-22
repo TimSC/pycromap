@@ -59,10 +59,20 @@ def _stored_in(level, x0, x1, y0, y1):
 		y__range=(y0, y1))).values_list("x", "y"))
 
 
+def _file_present(file):
+	"""Whether a rendered tile's file is in the cache: a tile without one (an
+	empty tile, or one kept in the database) needs none. The database says
+	what was rendered; a file deleted from the cache since is rendered
+	again."""
+	return not file or (Path(settings.TILE_CACHE_DIR) / file).exists()
+
+
 def _rendered_in(zoom, x0, x1, y0, y1):
-	"""The rendered tiles at a zoom within a range of tiles, as {(x, y)}."""
-	return set(TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x__in=range(x0, x1 + 1), y__range=(y0, y1),
-		status=TileState.DONE, rendered_at__isnull=False).values_list("x", "y"))
+	"""The rendered tiles at a zoom within a range of tiles, as {(x, y)}:
+	those whose files are still there."""
+	return {(x, y) for x, y, file in TileState.objects.filter(kind=TileState.TILE, zoom=zoom,
+		x__in=range(x0, x1 + 1), y__range=(y0, y1), status=TileState.DONE, rendered_at__isnull=False)
+		.values_list("x", "y", "file") if _file_present(file)}
 
 
 def _busy(kind, zoom):
@@ -157,12 +167,12 @@ def _candidates(sweep):
 
 def _rendered_xy(kind, zoom, ys):
 	"""The rendered x of each row y in ys at (kind, zoom), as {y: {x, ...}}:
-	stored summaries, or rendered tiles."""
+	stored summaries, or rendered tiles whose files are still there."""
 	if kind == TileState.SUMMARY:
 		pairs = TileSummary.objects.filter(zoom=zoom, y__in=ys).values_list("y", "x")
 	else:
-		pairs = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, y__in=ys,
-			status=TileState.DONE, rendered_at__isnull=False).values_list("y", "x")
+		pairs = [(y, x) for y, x, file in TileState.objects.filter(kind=TileState.TILE, zoom=zoom, y__in=ys,
+			status=TileState.DONE, rendered_at__isnull=False).values_list("y", "x", "file") if _file_present(file)]
 	rendered = {}
 	for y, x in pairs:
 		rendered.setdefault(y, set()).add(x)
