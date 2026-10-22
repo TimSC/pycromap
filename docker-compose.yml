@@ -52,8 +52,6 @@ x-pycromap: &pycromap
     RENDER_WORKERS: ${RENDER_WORKERS:-8}
     # Whether idle renderers work ahead (see README.md)
     RENDER_IDLE_WORK: ${RENDER_IDLE_WORK:-false}
-    IDLE_RADIUS: ${IDLE_RADIUS:-4}
-    IDLE_SEEDS: ${IDLE_SEEDS:-200}
     IDLE_QUEUE: ${IDLE_QUEUE:-4096}
   extra_hosts:
     - "host.docker.internal:host-gateway"

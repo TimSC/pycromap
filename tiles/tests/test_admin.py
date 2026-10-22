@@ -12,7 +12,7 @@ class AdminTests(TestCase):
 
 	def test_changelist_shows_the_jobs_and_their_counts(self):
 		TileState.objects.create(kind=TileState.TILE, zoom=12, x=1, y=2, status=TileState.DONE,
-			request_count=3, data_version=9, render_seconds=1.5)
+			data_version=9, render_seconds=1.5)
 		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=3, y=4, status=TileState.QUEUED,
 			idle=True, priority=-1)
 		response = self.client.get("/admin/tiles/tilestate/")

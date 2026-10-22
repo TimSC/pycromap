@@ -1,6 +1,4 @@
-import tempfile
 from datetime import timedelta
-from pathlib import Path
 
 import pyo5m
 from django.test import TestCase, override_settings
@@ -21,12 +19,7 @@ TZOOMS = {4: {"source": "data", "cache": False, "summary": True},
 	3: {"source": "summary", "level": 4, "cache": False, "summary": True}}
 
 
-def request(zoom, x, y, when=None):
-	TileState.objects.create(kind=TileState.TILE, zoom=zoom, x=x, y=y, status=TileState.DONE,
-		request_count=1, requested_at=when)
-
-
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200, IDLE_QUEUE=8)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_QUEUE=8)
 class PlanTests(TestCase):
 	def test_the_sweep_begins_at_the_corner(self):
 		# Nobody has asked for anything: the fleet starts at the front of the
@@ -35,70 +28,14 @@ class PlanTests(TestCase):
 		planned = idle.plan(7, "w")
 		self.assertEqual(planned, [(TileState.SUMMARY, 12, x, 0) for x in range(7)])
 
-	def test_base_summaries_nearest_first(self):
-		request(12, 100, 100)
-		planned = idle.plan(10, "w")
-		self.assertEqual(planned[0], (TileState.SUMMARY, 12, 100, 100))
-		self.assertTrue(all(z == 12 for _, z, _, _ in planned[:9]))  # the ring
-		self.assertEqual(planned[9], (TileState.SUMMARY, 12, 0, 0))  # then the sweep
-
 	def test_skips_what_exists_or_is_under_way(self):
-		request(12, 100, 100)
-		build.store(12, 100, 100, pyo5m.OsmData(), 1)
-		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=101, y=100, status=TileState.QUEUED, priority=10)
-		planned = idle.plan(10, "w")
-		self.assertNotIn((TileState.SUMMARY, 12, 100, 100), planned)
-		self.assertNotIn((TileState.SUMMARY, 12, 101, 100), planned)
-		self.assertEqual(len(planned), 10)  # the ring, less two, and the sweep
-
-	def test_coarser_summary_once_those_beneath_exist(self):
-		request(11, 0, 0)
-		beneath = build.tiles_beneath(10, 0, 0, 12)
-		for level, x, y in beneath:
-			build.store(level, x, y, pyo5m.OsmData(), 1)
-		planned = idle.plan(50, "w")
-		# Before the sweep: the summaries beneath it all exist
-		self.assertEqual(planned[0], (TileState.SUMMARY, 10, 0, 0))
-
-	def test_idle_work_does_not_seed_more(self):
-		request(12, 100, 100)
-		idle.queue_idle_work("w")
-		# Only the requested tile seeds: everything planned is within a tile
-		# of it, or is the frontier of a row
-		for job in TileState.objects.filter(idle=True):
-			self.assertTrue(max(abs(job.x - 100), abs(job.y - 100)) <= 1
-				or (job.x, job.y) == (0, 0))
+		build.store(12, 0, 0, pyo5m.OsmData(), 1)
+		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=1, y=0, status=TileState.QUEUED, priority=10)
+		self.assertEqual(idle.plan(5, "w"), [(TileState.SUMMARY, 12, x, 0) for x in range(2, 7)])
 
 
-class MissingFileTests(TestCase):
-	def test_a_tile_whose_file_is_gone_is_planned_again(self):
-		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache), IDLE_RADIUS=0,
-				TILE_ZOOMS={12: {"source": "data", "cache": True, "summary": True}}):
-			TileState.objects.create(kind=TileState.TILE, zoom=12, x=100, y=100, status=TileState.DONE,
-				request_count=1, requested_at=timezone.now(), rendered_at=timezone.now(), file="12/100/100.1.pbf.gz")
-			build.store(12, 100, 100, pyo5m.OsmData(), 1)
-			# Rendered, by the database, but its file was deleted from the cache
-			self.assertIn((TileState.TILE, 12, 100, 100), idle.plan(1, "w"))
-			(Path(cache) / "12/100").mkdir(parents=True)
-			(Path(cache) / "12/100/100.1.pbf.gz").write_bytes(b"tile")
-			self.assertNotIn((TileState.TILE, 12, 100, 100), idle.plan(1, "w"))
-
-
-@override_settings(TILE_ZOOMS=TZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200)
+@override_settings(TILE_ZOOMS=TZOOMS)
 class SweepTests(TestCase):
-	def test_the_newest_seed_comes_first(self):
-		t0 = timezone.now() - timedelta(hours=1)
-		request(4, 1, 1, t0)
-		request(4, 8, 8, t0 + timedelta(minutes=2))
-		planned = idle.plan(100, "w")
-		# The newer (centre) seed comes first, with its ring around it: the base
-		# summaries, the cheapest way to have the pyramid there
-		self.assertEqual(planned[0], (TileState.SUMMARY, 4, 8, 8))
-		self.assertEqual(len([j for j in planned if max(abs(j[2] - 8), abs(j[3] - 8)) <= 1]), 9)
-		# ...and then (after the older seed's ring) the rest of the planet,
-		# from the front of each row
-		self.assertLessEqual({(TileState.SUMMARY, 4, x, 0) for x in range(16)}, set(planned[9:]))
-
 	def test_a_stored_summary_advances_the_frontier(self):
 		planned = idle.plan(10000, "w")
 		self.assertIn((TileState.SUMMARY, 4, 0, 0), planned)
@@ -117,8 +54,7 @@ class SweepTests(TestCase):
 
 	@override_settings(TILE_ZOOMS={**TZOOMS, 4: {**TZOOMS[4], "cache": True}})
 	def test_the_sweep_builds_only_summaries(self):
-		request(4, 8, 8)
-		idle.plan(10, "w")
+		self.assertEqual({kind for kind, _, _, _ in idle.plan(10, "w")}, {TileState.SUMMARY})
 		# The base level's rows; the coarser level's are made when its turn
 		# comes, and none for tiles, even of a cached zoom
 		self.assertEqual(TileSweep.objects.filter(zoom=4, kind=TileState.SUMMARY).count(), 1 << 4)
@@ -155,7 +91,7 @@ class SweepTests(TestCase):
 		self.assertIn((TileState.SUMMARY, 4, 1, 0), planned)
 
 
-@override_settings(TILE_ZOOMS=TZOOMS, IDLE_RADIUS=1, IDLE_SEEDS=200)
+@override_settings(TILE_ZOOMS=TZOOMS)
 class ClaimTests(TestCase):
 	def test_a_claimed_row_is_claimed_again(self):
 		idle.plan(1, "w1")
@@ -176,16 +112,14 @@ class ClaimTests(TestCase):
 		self.assertEqual(TileSweep.objects.get(kind=TileState.SUMMARY, zoom=4, y=0).claimed_by, "w2")
 
 	def test_idle_jobs_are_left_unless_working_ahead(self):
-		request(4, 8, 8)
 		idle.queue_idle_work("w")
 		self.assertIsNone(queue.claim_next("w", idle=False))
 		self.assertLess(queue.claim_next("w", idle=True).priority, 0)
 
 
-@override_settings(TILE_ZOOMS=ZOOMS, IDLE_RADIUS=2, IDLE_SEEDS=200, IDLE_QUEUE=4)
+@override_settings(TILE_ZOOMS=ZOOMS, IDLE_QUEUE=4)
 class QueueIdleTests(TestCase):
 	def test_fills_up_to_the_renderers_below_requests(self):
-		request(12, 100, 100)
 		self.assertEqual(idle.queue_idle_work("w"), 4)  # IDLE_QUEUE of them
 		jobs = TileState.objects.filter(idle=True)
 		self.assertEqual(jobs.count(), 4)
@@ -197,13 +131,11 @@ class QueueIdleTests(TestCase):
 		self.assertGreaterEqual(TileState.objects.get(kind=TileState.TILE, x=50).priority, 0)
 
 	def test_requested_jobs_do_not_count_towards_the_idle_queue(self):
-		request(12, 100, 100)
 		TileRequest.objects.create(zoom=12, x=50, y=50, status=TileRequest.WAITING)
 		# The request is queued, but the idle renderers still get their share
 		self.assertEqual(idle.queue_idle_work("w"), 4)
 
 	def test_tops_up_once_down_to_half(self):
-		request(12, 100, 100)
 		idle.queue_idle_work("w")
 		queue.claim_next("w")
 		self.assertEqual(idle.queue_idle_work("w"), 0)  # three left: more than half
@@ -211,20 +143,9 @@ class QueueIdleTests(TestCase):
 		self.assertEqual(idle.queue_idle_work("w"), 2)  # two left: back up to four
 
 	def test_one_renderer_plans_at_a_time(self):
-		request(12, 100, 100)
 		with idle._planning() as planning:
 			self.assertTrue(planning)
 			self.assertTrue(idle.planning_now())
 			self.assertEqual(idle.queue_idle_work("w"), 0)  # another is planning
 		self.assertFalse(idle.planning_now())
 		self.assertEqual(idle.queue_idle_work("w"), 4)
-
-
-@override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True}}, IDLE_RADIUS=1, IDLE_SEEDS=200)
-class CachedBaseTests(TestCase):
-	def test_tiles_rather_than_their_summaries(self):
-		request(12, 100, 100)
-		planned = idle.plan(20, "w")
-		# Rendering a base tile builds its summary, so it isn't planned as well
-		self.assertEqual(planned[0], (TileState.TILE, 12, 100, 100))
-		self.assertEqual({k for k, z, _, _ in planned if z == 12}, {TileState.TILE})

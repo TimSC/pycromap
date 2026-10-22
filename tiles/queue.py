@@ -58,16 +58,6 @@ def _write(path, data):
 	os.replace(temporary, full)
 
 
-def log_request(zoom, x, y):
-	"""Records that a tile was asked for, in its TileState (when, and how
-	often: the idle renderers work near the tiles asked for)."""
-	with transaction.atomic():
-		tile, _ = TileState.objects.get_or_create(kind=TileState.TILE, zoom=zoom, x=x, y=y,
-			defaults={"status": TileState.DONE})
-		TileState.objects.filter(pk=tile.pk).update(requested_at=timezone.now(),
-			request_count=F("request_count") + 1)
-
-
 # ---- Requested work: TileRequest rows
 
 def wait_for_render(request_id):

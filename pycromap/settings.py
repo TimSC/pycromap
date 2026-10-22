@@ -119,6 +119,12 @@ DATABASES = {
 		"NAME": env("PYCROCOSM_DB_NAME", "db_map"),
 		"USER": env("PYCROCOSM_DB_USER", "pycrocosm"),
 		"PASSWORD": env("PYCROCOSM_DB_PASSWORD", ""),
+		# Kept open between jobs (and requests), rather than a new connection,
+		# and a new PostgreSQL process, for each: a renderer reads the map
+		# for many jobs a second. Checked before reuse, so one the server
+		# dropped is replaced.
+		"CONN_MAX_AGE": 600,
+		"CONN_HEALTH_CHECKS": True,
 		"OPTIONS": {
 			# psycopg2's ISOLATION_LEVEL_REPEATABLE_READ
 			"isolation_level": 2,
@@ -250,14 +256,10 @@ EDIT_CHECK_INTERVAL = float(env("EDIT_CHECK_INTERVAL", "600"))
 # How many render_tiles processes to run: each renders one job at a time
 # (rendering is CPU-bound, and threads in one process share the GIL)
 RENDER_WORKERS = int(env("RENDER_WORKERS", "8"))
-# Whether idle renderers work ahead: on summaries, and tiles of cached zooms,
-# that nobody has asked for yet, highest zooms first, then nearest the
-# IDLE_SEEDS most recently requested tiles, within IDLE_RADIUS tiles of them
-# (see tiles/idle.py). With nothing to do, they look again after IDLE_POLL
-# seconds.
+# Whether idle renderers work ahead, building the summaries for the whole
+# planet that nobody has asked for yet (see tiles/idle.py). With nothing to
+# do, they look again after IDLE_POLL seconds.
 RENDER_IDLE_WORK = env("RENDER_IDLE_WORK", "false").lower() in ("1", "true", "yes")
-IDLE_RADIUS = int(env("IDLE_RADIUS", "4"))
-IDLE_SEEDS = int(env("IDLE_SEEDS", "200"))
 IDLE_POLL = 10
 # How many idle jobs are kept queued for the fleet. One renderer at a time
 # plans them, and the queue is topped up once it is down to half, so the

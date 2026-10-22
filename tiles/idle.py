@@ -1,24 +1,18 @@
-"""Work for idle renderers (RENDER_IDLE_WORK): tiles and summaries nobody has
-asked for yet, near those they have, and, once those are done, the rest of the
-planet.
+"""Work for idle renderers (RENDER_IDLE_WORK): the summaries for the whole
+planet, which nobody has asked for yet. Tiles are only rendered when asked
+for.
 
-Only work that can be done straight away is chosen, as for requests: a
-summary at the base level (from the map data), a coarser summary whose
-summaries beneath it all exist, or a tile of a cached zoom that can be
-rendered now (rendering an uncached zoom's tile ahead would be wasted). The
-highest zooms come first, then those nearest the newest requested tile: only
-tiles someone asked for count, not those idle renderers did.
-
-The rest of the planet is summaries only (its tiles are rendered when asked
-for), kept in TileSweep, one row per row of tiles (at each summary level);
-each row hands out its first gaps that can be built now. Idle renderers claim the rows and recheck which tiles are
-rendered, so the first gap is what's left to do; the frontiers advance as the
-rows work, and the whole world eventually renders, and a request for a tile
-renders it, so the next recheck skips past it.
+The sweep is kept in TileSweep, one row per row of summaries at each summary
+level. Idle renderers claim rows and recheck which summaries in them are built
+and current, so the gaps are what's left to do; each row hands out its first
+gaps that can be built now: at the base level, from the map data, any; at a
+coarser level, those whose finer summaries are all current. The highest level
+comes first, then the coarser ones as the rows beneath them fill. A summary
+built for a request is skipped on the next recheck, and the whole pyramid is
+eventually built.
 """
 
 import fcntl
-import math
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -37,188 +31,21 @@ from .models import TileState, TileSweep
 # order planned (TileState.idle marks them as idle work)
 IDLE_PRIORITY = -1.0
 
-
-def _seeds():
-	"""The most recently requested tiles (zoom, x, y). Only tiles are ever
-	requested (summaries are queued for them), so the kind needn't be
-	asked for, which would steer SQLite to the index of every tile. The
-	condition is written out, not passed as a parameter, as SQLite only uses
-	a partial index (tilestate_requested) for a query that states its
-	condition."""
-	return list(TileState.objects.extra(where=['"request_count" > 0'])
-		.order_by("-requested_at").values_list("zoom", "x", "y")[:settings.IDLE_SEEDS])
-
-
-# The ranges below ask for each column of tiles (x IN ...) and a range of rows
-# (y BETWEEN ...), so that the index of each tile, by (kind, zoom, x, y) or
-# (zoom, x, y), finds each column's few: a range of x would have it read
-# every row of every column in it.
-
-def _stored_in(level, x0, x1, y0, y1):
-	"""The current summaries at a level within a range of tiles, as {(x, y)}."""
-	return set(summaries.current(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
-		y__range=(y0, y1))).values_list("x", "y"))
-
-
-def _file_present(file):
-	"""Whether a rendered tile's file is in the cache: a tile without one (an
-	empty tile, or one kept in the database) needs none. The database says
-	what was rendered; a file deleted from the cache since is rendered
-	again."""
-	return not file or (Path(settings.TILE_CACHE_DIR) / file).exists()
-
-
-def _rendered_in(zoom, x0, x1, y0, y1):
-	"""The rendered tiles at a zoom within a range of tiles, as {(x, y)}:
-	those whose files are still there."""
-	return {(x, y) for x, y, file in TileState.objects.filter(kind=TileState.TILE, zoom=zoom,
-		x__in=range(x0, x1 + 1), y__range=(y0, y1), status=TileState.DONE, rendered_at__isnull=False)
-		.values_list("x", "y", "file") if _file_present(file)}
-
-
-def _busy(kind, zoom):
-	"""Tiles with a job that is under way, or has failed. Found by status
-	alone, which the queue's index (tilestate_queue) finds the few of: asked
-	for by kind and zoom as well, SQLite would read every tile of the zoom."""
-	return {(x, y) for k, z, x, y in TileState.objects.filter(
-		status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list("kind", "zoom", "x", "y")
-		if k == kind and z == zoom}
-
-
-def _centres(seeds, zoom):
-	"""The seeds, at zoom: (x, y), the newest first, deduplicated."""
-	n = 1 << zoom
-	centres = []
-	seen = set()
-	for seed_zoom, sx, sy in seeds:  # newest first
-		scale = 2.0 ** (zoom - seed_zoom)
-		centre = (min(n - 1, int(math.floor((sx + 0.5) * scale))), min(n - 1, int(math.floor((sy + 0.5) * scale))))
-		if centre in seen:
-			continue
-		seen.add(centre)
-		centres.append(centre)
-	return centres
-
-
-def _rings(cx, cy, radius, n):
-	"""The tiles around (cx, cy), out to radius, nearest first: (x, y), the
-	distance counting diagonals as one."""
-	for r in range(radius + 1):
-		for x in range(cx - r, cx + r + 1):
-			for y in range(cy - r, cy + r + 1):
-				if max(abs(x - cx), abs(y - cy)) == r and 0 <= x < n and 0 <= y < n:
-					yield x, y
-
-
-def _ready_around(kind, zoom, cx, cy, radius):
-	"""A test of whether a tile around (cx, cy) at zoom is worth doing and can
-	be done now: not done yet, and what it is made from there. It looks up
-	only the tiles around the centre, with a range on the index of each, so
-	it costs the same however much of the map is done."""
-	n = 1 << zoom
-	x0, x1, y0, y1 = max(0, cx - radius), min(n - 1, cx + radius), max(0, cy - radius), min(n - 1, cy + radius)
-
-	def beneath(level):
-		scale = 1 << (level - zoom)
-		return _stored_in(level, x0 * scale, (x1 + 1) * scale - 1, y0 * scale, (y1 + 1) * scale - 1)
-
-	if kind == TileState.SUMMARY:
-		done = _stored_in(zoom, x0, x1, y0, y1)
-		finer = summaries.finer_level(zoom)
-		under = beneath(finer) if finer is not None else None
-
-		def ready(x, y):
-			if (x, y) in done:
-				return False
-			return under is None or all((fx, fy) in under for _, fx, fy in summaries.tiles_beneath(zoom, x, y, finer))
-		return ready
-
-	done = _rendered_in(zoom, x0, x1, y0, y1)
-	config = settings.TILE_ZOOMS[zoom]
-	level = config.get("level") if config["source"] == "summary" else None
-	under = beneath(level) if level is not None else None
-
-	def ready(x, y):
-		if (x, y) in done:
-			return False
-		return under is None or all((sx, sy) in under for _, sx, sy in summaries.tiles_beneath(zoom, x, y, level))
-	return ready
-
-
-def _candidate_levels(sweep):
-	"""The (zoom, kind) pairs that could be done, highest zoom first. The
-	summaries, base level first: the cheapest way to have the pyramid. For
-	the rings around the seeds, the tiles of cached zooms as well, to have
-	them ready where someone is looking; the planet sweep builds only the
-	summaries, leaving the tiles to be rendered when asked for."""
-	kinds = [(level, TileState.SUMMARY) for level in summaries.levels()]
-	if not sweep:
-		kinds.extend((zoom, TileState.TILE) for zoom, config in settings.TILE_ZOOMS.items()
-			if config.get("cache"))
-	# Highest zooms first; at the same zoom, tiles before summaries (rendering
-	# a tile from the map data builds its summary too)
-	return sorted(kinds, key=lambda k: (-k[0], k[1] != TileState.TILE))
-
-
-def _candidates(sweep):
-	"""As _candidate_levels, as (zoom, kind, None): the sweep's frontiers
-	(tiles.idle._frontiers) do their own recheck of what is rendered."""
-	return [(zoom, kind, None) for zoom, kind in _candidate_levels(sweep)]
-
-
-def _rendered_xy(kind, zoom, ys):
-	"""The rendered x of each row y in ys at (kind, zoom), as {y: {x, ...}}:
-	current summaries (one built as summaries are now; see
-	summaries.build.current), or rendered tiles whose files are still
-	there."""
-	# Every column asked for, so that the index finds the rows' few (see
-	# above _stored_in)
-	columns = range(1 << zoom)
-	if kind == TileState.SUMMARY:
-		pairs = summaries.current(TileSummary.objects.filter(zoom=zoom, x__in=columns, y__in=ys)).values_list("y", "x")
-	else:
-		pairs = [(y, x) for y, x, file in TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x__in=columns, y__in=ys,
-			status=TileState.DONE, rendered_at__isnull=False).values_list("y", "x", "file") if _file_present(file)]
-	rendered = {}
-	for y, x in pairs:
-		rendered.setdefault(y, set()).add(x)
-	return rendered
-
-
-def _ensure_sweep_rows(kind, zoom):
-	"""Gives (kind, zoom) a TileSweep row for every row of its grid, if it
-	hasn't already: 2^zoom rows."""
-	n = 1 << zoom
-	have = set(TileSweep.objects.filter(kind=kind, zoom=zoom).values_list("y", flat=True))
-	missing = [TileSweep(kind=kind, zoom=zoom, y=y) for y in range(n) if y not in have]
-	if missing:
-		TileSweep.objects.bulk_create(missing, ignore_conflicts=True)
-
-
 # The jobs a sweep row hands out at a time: its first gaps that can be done
 # now, enough for the fleet to share a row, and few enough that looking along
 # it stays cheap
 SWEEP_ROW_JOBS = 32
 
 
-def _passed_over(kind, zoom):
-	"""The tiles of (kind, zoom) the sweep doesn't hand out: those whose jobs
-	are under way (queued or rendering), and those given up, having failed
-	RENDER_ATTEMPTS times, which a row moves past so one tile that can't be
-	done doesn't hold it up. A job that failed fewer times is handed out
-	again. As ({(x, y)} under way, {(x, y)} given up). Found by status
-	alone, as in _busy."""
-	underway, given_up = set(), set()
-	for k, z, x, y, status, attempts in TileState.objects.filter(
-			status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list(
-			"kind", "zoom", "x", "y", "status", "attempts"):
-		if k != kind or z != zoom:
-			continue
-		if status != TileState.FAILED:
-			underway.add((x, y))
-		elif attempts >= settings.RENDER_ATTEMPTS:
-			given_up.add((x, y))
-	return underway, given_up
+# The queries below ask for each column of summaries (x IN ...), so that the
+# index of each summary, by (zoom, x, y), finds a row's few: asked for by row
+# alone (or a range of x), it would read every summary of the level.
+
+def _built_in_row(level, y):
+	"""The x of the current summaries (built as summaries are now; see
+	summaries.build.current) in row y at a level."""
+	return set(summaries.current(TileSummary.objects.filter(zoom=level, x__in=range(1 << level), y=y))
+		.values_list("x", flat=True))
 
 
 def _ready_in_row(level, y, xs):
@@ -236,22 +63,50 @@ def _ready_in_row(level, y, xs):
 		for fy in range(y * scale, (y + 1) * scale))]
 
 
-def _frontiers(limit, rank, kind, zoom, worker):
-	"""Up to limit tiles from the front of (kind, zoom), with the rank: in
-	each row, left to right, the first SWEEP_ROW_JOBS gaps that can be done
-	now (a coarser summary once the finer ones beneath it are current), rows
-	top to bottom. The worker's own rows come first (it is working them), then
-	new rows. A row stays claimed while it has gaps, so other renderers don't
-	waste a look at it; it is released, with a timestamp, once every tile in
-	it is rendered (or given up)."""
-	_ensure_sweep_rows(kind, zoom)
+def _passed_over(level):
+	"""The summaries at a level the sweep doesn't hand out: those whose jobs
+	are under way (queued or rendering), and those given up, having failed
+	RENDER_ATTEMPTS times, which a row moves past so one that can't be built
+	doesn't hold it up. A job that failed fewer times is handed out again.
+	As ({(x, y)} under way, {(x, y)} given up). Found by status alone, which
+	the queue's index (tilestate_queue) finds the few of: asked for by kind
+	and zoom as well, SQLite would read every job of the level."""
+	underway, given_up = set(), set()
+	for kind, zoom, x, y, status, attempts in TileState.objects.filter(
+			status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list(
+			"kind", "zoom", "x", "y", "status", "attempts"):
+		if kind != TileState.SUMMARY or zoom != level:
+			continue
+		if status != TileState.FAILED:
+			underway.add((x, y))
+		elif attempts >= settings.RENDER_ATTEMPTS:
+			given_up.add((x, y))
+	return underway, given_up
+
+
+def _ensure_sweep_rows(level):
+	"""Gives a level a TileSweep row for every row of its grid, if it hasn't
+	already: 2^level rows."""
+	have = set(TileSweep.objects.filter(kind=TileState.SUMMARY, zoom=level).values_list("y", flat=True))
+	missing = [TileSweep(kind=TileState.SUMMARY, zoom=level, y=y) for y in range(1 << level) if y not in have]
+	if missing:
+		TileSweep.objects.bulk_create(missing, ignore_conflicts=True)
+
+
+def _frontiers(limit, level, worker):
+	"""Up to limit summaries (level, x, y) from the front of a level: in each
+	row, left to right, the first SWEEP_ROW_JOBS gaps that can be built now,
+	rows top to bottom. The worker's own rows come first (it is working
+	them), then new rows. A row stays claimed while it has gaps, so other
+	renderers don't waste a look at it; it is released, with a timestamp,
+	once every summary in it is built (or given up)."""
+	_ensure_sweep_rows(level)
 	rows_qs = TileSweep.objects.filter(
-		Q(kind=kind, zoom=zoom) & (Q(claimed_by=worker) | Q(claimed_by="", last_checked__isnull=True)))
+		Q(kind=TileState.SUMMARY, zoom=level) & (Q(claimed_by=worker) | Q(claimed_by="", last_checked__isnull=True)))
 	rows = list(rows_qs.order_by(
 		Case(When(claimed_by=worker, then=0), default=1), "y"
 	).values_list("pk", "y")[:limit])
-	underway, given_up = _passed_over(kind, zoom)
-	n = 1 << zoom
+	underway, given_up = _passed_over(level)
 	now = timezone.now()
 	jobs = []
 	for pk, y in rows:
@@ -263,86 +118,30 @@ def _frontiers(limit, rank, kind, zoom, worker):
 				claimed_by=worker, claimed_at=now):
 			if not TileSweep.objects.filter(pk=pk, claimed_by=worker).exists():
 				continue
-		rendered = _rendered_xy(kind, zoom, [y]).get(y, set())
-		gaps = [x for x in range(n) if x not in rendered and (x, y) not in given_up]
+		built = _built_in_row(level, y)
+		gaps = [x for x in range(1 << level) if x not in built and (x, y) not in given_up]
 		if not gaps:
-			# Every tile is rendered: release the row, with a timestamp
+			# Every summary is built: release the row, with a timestamp
 			TileSweep.objects.filter(pk=pk).update(last_checked=now, claimed_by="", claimed_at=None)
 			continue
 		take = min(SWEEP_ROW_JOBS, limit - len(jobs))
-		todo = [x for x in gaps if (x, y) not in underway]
-		if kind == TileState.SUMMARY:
-			# Looking a little further along the row than it takes, past
-			# those not yet ready
-			todo = _ready_in_row(zoom, y, todo[:take * 4])
-		jobs.extend((rank, kind, zoom, x, y) for x in todo[:take])
+		# Looking a little further along the row than it takes, past those
+		# not yet ready
+		todo = _ready_in_row(level, y, [x for x in gaps if (x, y) not in underway][:take * 4])
+		jobs.extend((level, x, y) for x in todo[:take])
 	return jobs
 
 
-def _sweep(limit, worker):
-	"""Up to limit summaries from the fronts of the rows, the front of the highest
-	zoom first, and the rest of the budget shared by the lower zooms, in
-	their order."""
-	frontiers = []
-	for rank, (zoom, kind, ready) in enumerate(_candidates(sweep=True)):
-		frontiers.extend(_frontiers(limit - len(frontiers), rank, kind, zoom, worker))
-		if len(frontiers) >= limit:
-			break
-	frontiers.sort(key=lambda frontier: frontier[0])
-	return [frontier[1:] for frontier in frontiers[:limit]]
-
-
 def plan(count, worker):
-	"""Up to count jobs (kind, zoom, x, y) for idle renderers, best first.
-
-	First the IDLE_RADIUS rings around the seeds, nearest first; then the rest
-	of the planet, row by row, from the frontiers."""
-	if count <= 0:
-		return []
-	chosen = []
-	seen = set()
-	# Base-level tiles from the map data whose rendering builds their summary
-	rendering = set()
-	seeds = _seeds()
-	if seeds:
-		radius = settings.IDLE_RADIUS
-		for zoom, kind in _candidate_levels(sweep=False):
-			if len(chosen) >= count:
-				break
-			busy = _busy(kind, zoom)
-			if kind == TileState.SUMMARY and zoom == summaries.base_level():
-				busy |= rendering
-				if (settings.TILE_ZOOMS.get(zoom) or {}).get("source") == "data":
-					busy |= _busy(TileState.TILE, zoom)
-			near = set()
-			# The newest seed's rings before the next-newest seed's, so the
-			# place the user is now wins over where they were
-			for cx, cy in _centres(seeds, zoom):
-				if len(chosen) >= count:
-					break
-				ready = None
-				for x, y in _rings(cx, cy, radius, 1 << zoom):
-					if len(chosen) >= count:
-						break
-					if (x, y) in near or (x, y) in seen or (x, y) in busy:
-						continue
-					near.add((x, y))
-					# Looked up once a centre has a tile worth asking about
-					ready = ready or _ready_around(kind, zoom, cx, cy, radius)
-					if not ready(x, y):
-						continue
-					seen.add((x, y))
-					chosen.append((kind, zoom, x, y))
-					if kind == TileState.TILE and zoom == summaries.base_level() and settings.TILE_ZOOMS[zoom]["source"] == "data":
-						rendering.add((x, y))
-	for job in _sweep(count - len(chosen), worker):
-		if job in seen:
-			continue
-		seen.add(job)
-		chosen.append(job)
-		if len(chosen) >= count:
-			return chosen
-	return chosen
+	"""Up to count jobs (kind, zoom, x, y) for idle renderers, best first: the
+	summaries at the fronts of the sweep's rows, the highest level first, and
+	the rest of the budget shared by the coarser levels, in their order."""
+	jobs = []
+	for level in summaries.levels():  # finest first
+		if len(jobs) >= count:
+			break
+		jobs.extend((TileState.SUMMARY, zoom, x, y) for zoom, x, y in _frontiers(count - len(jobs), level, worker))
+	return jobs
 
 
 def reclaim_sweeps():

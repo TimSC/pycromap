@@ -158,9 +158,6 @@ class TileViewTests(TransactionTestCase):
 		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="12/1/2.5.pbf.gz")
 		response = self.client.get("/tiles/12/1/2.pbf")
 		self.assertEqual((response.status_code, response["Location"]), (302, "/tilecache/12/1/2.5.pbf.gz"))
-		# Answered from the cache: nothing written to its TileState
-		tile = TileState.objects.get()
-		self.assertEqual((tile.request_count, tile.requested_at), (0, None))
 
 		# The file itself, while DEBUG is on (it is in production)
 		with override_settings(DEBUG=True):
@@ -248,7 +245,7 @@ class TileViewTests(TransactionTestCase):
 		self.assertEqual((response["Content-Type"], response["Content-Encoding"]), ("application/vnd.mapbox-vector-tile", "gzip"))
 		self.assertEqual(again.status_code, 200)
 		tile = TileState.objects.get()
-		self.assertEqual((tile.request_count, tile.data_version), (2, 9))
+		self.assertEqual(tile.data_version, 9)
 
 
 class PageTests(TransactionTestCase):

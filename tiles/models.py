@@ -29,9 +29,6 @@ class TileState(models.Model):
 	priority = models.FloatField(default=0)
 	queued_at = models.DateTimeField(null=True, blank=True)
 
-	requested_at = models.DateTimeField(null=True, blank=True)
-	request_count = models.PositiveIntegerField(default=0)
-
 	# The renderer working on it, and since when
 	claimed_by = models.CharField(max_length=100, blank=True)
 	claimed_at = models.DateTimeField(null=True, blank=True)
@@ -59,9 +56,6 @@ class TileState(models.Model):
 		]
 		indexes = [
 			models.Index(fields=["status", "-priority"], name="tilestate_queue"),
-			# The most recently requested tiles (tiles.idle._seeds), among the
-			# few that have been requested at all
-			models.Index(fields=["-requested_at"], condition=models.Q(request_count__gt=0), name="tilestate_requested"),
 		]
 
 	def __str__(self):

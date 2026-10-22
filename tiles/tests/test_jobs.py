@@ -203,6 +203,6 @@ class PlaceholderTests(TestCase):
 		self.assertEqual((response.status_code, response["X-Tile-Status"]), (204, "placeholder"))
 		self.assertEqual(response["Cache-Control"], "no-store")
 		self.assertFalse(queued)
-		tile = TileState.objects.get()
-		self.assertEqual((tile.kind, tile.status, tile.request_count), (TileState.TILE, TileState.DONE, 1))
+		# Nothing recorded: the tile isn't queued
+		self.assertFalse(TileState.objects.filter(kind=TileState.TILE).exists())
 		self.assertFalse(TileRequest.objects.exists())

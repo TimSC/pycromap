@@ -31,14 +31,13 @@ class TileRequestAdmin(admin.ModelAdmin):
 @admin.register(TileState)
 class TileStateAdmin(admin.ModelAdmin):
 	change_list_template = "tilestate_change_list.html"
-	list_display = ("job", "status", "requested", "queued", "claimed", "render", "error")
+	list_display = ("job", "status", "queued", "claimed", "render", "error")
 	list_filter = ("kind", "status", "zoom")
 	search_fields = ("error",)
 	# The jobs to watch first: rendering, then queued in the order they will
 	# be taken, then failed, then done
 	ordering = ("-status", "-priority", "queued_at")
-	readonly_fields = ("kind", "zoom", "x", "y", "status", "idle", "priority",
-		"queued_at", "requested_at", "request_count",
+	readonly_fields = ("kind", "zoom", "x", "y", "status", "idle", "priority", "queued_at",
 		"claimed_by", "claimed_at", "attempts", "error", "rendered_at", "data_version",
 		"render_seconds", "file")
 	fields = readonly_fields
@@ -59,12 +58,6 @@ class TileStateAdmin(admin.ModelAdmin):
 			markers.append("idle")
 		return "{} {}/{}/{}{}".format(tile.kind, tile.zoom, tile.x, tile.y,
 			" ({})".format(", ".join(markers)) if markers else "")
-
-	@admin.display(description="requested")
-	def requested(self, tile):
-		if not tile.request_count:
-			return ""
-		return "{}x {}".format(tile.request_count, queue.span(tile.requested_at))
 
 	@admin.display(description="queued")
 	def queued(self, tile):

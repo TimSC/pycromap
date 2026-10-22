@@ -80,7 +80,7 @@ class Command(BaseCommand):
 			self.stdout.write("  " + _row(job, queue.span(job.queued_at)))
 
 		# Failed
-		failed = TileState.objects.filter(status=TileState.FAILED).order_by("-requested_at")
+		failed = TileState.objects.filter(status=TileState.FAILED).order_by("-queued_at")
 		self.stdout.write("")
 		self.stdout.write("failed: {}".format(failed.count()))
 		for job in failed[:lines]:

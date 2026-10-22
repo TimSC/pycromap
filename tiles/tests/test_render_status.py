@@ -15,7 +15,7 @@ class RenderStatusTests(TestCase):
 			idle=True, priority=-1, queued_at=timezone.now())
 		TileRequest.objects.create(zoom=12, x=7, y=8, status=TileRequest.WAITING, attempts=1)
 		TileState.objects.create(kind=TileState.TILE, zoom=10, x=5, y=6, status=TileState.FAILED,
-			attempts=3, error="boom", requested_at=timezone.now())
+			attempts=3, error="boom", queued_at=timezone.now())
 		out = StringIO()
 		call_command("render_status", stdout=out)
 		text = out.getvalue()
