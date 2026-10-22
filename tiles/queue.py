@@ -19,7 +19,7 @@ from django.db import transaction
 from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
-from .models import TileRequest, TileState
+from .models import TileRequest, TileState, TileSweep
 from .common import COMMON_DIR, common_file
 
 
@@ -166,16 +166,6 @@ def claim_dependency(level, x, y, worker, priority):
 	return TileState.objects.get(pk=job.pk) if taken else None
 
 
-def refresh_claim(tile, worker):
-	"""Keeps a renderer's claim on a tile, and on the requests it claimed for
-	it, from looking abandoned (RENDER_LEASE) while it works on the tile's
-	dependencies."""
-	now = timezone.now()
-	TileState.objects.filter(pk=tile.pk, claimed_by=worker).update(claimed_at=now)
-	TileRequest.objects.filter(zoom=tile.zoom, x=tile.x, y=tile.y, status=TileRequest.CLAIMED,
-		claimed_by=worker).update(claimed_at=now)
-
-
 def still_wanted(tile):
 	"""Whether any request not cancelled still waits for a tile."""
 	return TileRequest.objects.filter(zoom=tile.zoom, x=tile.x, y=tile.y, cancelled=False,
@@ -208,11 +198,22 @@ def _release(requests, jobs, reason):
 
 
 def requeue_abandoned():
-	"""Gives the work claimed by renderers that have gone quiet (for
-	RENDER_LEASE seconds) to others (see _release)."""
+	"""Gives the work claimed by renderers that have gone quiet (no heartbeat
+	for RENDER_LEASE seconds) to others (see _release)."""
 	cutoff = timezone.now() - timedelta(seconds=settings.RENDER_LEASE)
 	return _release(TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_at__lt=cutoff),
 		TileState.objects.filter(status=TileState.RENDERING, claimed_at__lt=cutoff), "abandoned by its renderer")
+
+
+def heartbeat(worker):
+	"""Marks what a renderer holds (its jobs, the requests it claimed, its
+	sweep rows) as still held, so it isn't taken for abandoned
+	(RENDER_LEASE). The jobs are found by status, through the queue's index
+	(tilestate_queue), as there are few being rendered."""
+	now = timezone.now()
+	TileState.objects.filter(status=TileState.RENDERING, claimed_by=worker).update(claimed_at=now)
+	TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_by=worker).update(claimed_at=now)
+	TileSweep.objects.filter(claimed_by=worker).update(claimed_at=now)
 
 
 def release_claims(worker):

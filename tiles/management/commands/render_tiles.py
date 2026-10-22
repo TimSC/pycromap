@@ -16,12 +16,12 @@ import logging
 import os
 import signal
 import socket
-import threading  # for the stop event, nothing else
+import threading  # for the stop event and the heartbeat
 import time
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.db import close_old_connections, connections
+from django.db import DatabaseError, close_old_connections, connections
 
 from summaries import build as summaries
 from tiles import idle, queue
@@ -72,8 +72,8 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 	them all (CASCADE_MIN_ZOOM). Again and again, of those missing and not
 	underway, it takes one at the highest zoom (the finest, so what it is
 	built from is there), adds it to TileState as a job, claims it, and builds
-	it. Those other renderers are building, it waits for. It keeps its claim
-	on the tile fresh as it goes, and stops (FinalError) if no request wants
+	it. Those other renderers are building, it waits for. It stops
+	(FinalError) if no request wants
 	the tile any more, or a summary it needs can't be built; or (Stopped) if
 	the renderer is stopping (stop is set), between summaries, keeping those
 	built."""
@@ -95,7 +95,6 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 		ready = [tile for tile in tree if tile not in busy and buildable(tile)]
 		if not ready:
 			# What is left waits for what other renderers are building
-			queue.refresh_claim(job, worker)
 			time.sleep(wait)
 			continue
 		level, x, y = max(ready, key=lambda tile: tile[0])
@@ -111,7 +110,6 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 		queue.finish_summary(dependency, version, time.monotonic() - started)
 		logger.info("Built summary %d/%d/%d for %s %d/%d/%d: version %s, %.2fs", level, x, y, job.kind, job.zoom,
 			job.x, job.y, version, time.monotonic() - started)
-		queue.refresh_claim(job, worker)
 
 
 def render_tile_job(job, worker="", stop=None):
@@ -181,6 +179,21 @@ def render_one(process, stop=None):
 	return True
 
 
+def heartbeat(name, stop):
+	"""Every RENDER_HEARTBEAT seconds until stop is set, marks what the
+	renderer holds as still held (queue.heartbeat), however long its job
+	takes. Run in a thread of its own, with its own database connection."""
+	try:
+		while not stop.wait(settings.RENDER_HEARTBEAT):
+			try:
+				queue.heartbeat(name)
+			except DatabaseError as e:
+				logger.warning("Heartbeat failed: %s", e)
+			close_old_connections()
+	finally:
+		connections.close_all()
+
+
 class Command(BaseCommand):
 	help = "Renders queued tiles, highest priority first, until stopped"
 
@@ -201,6 +214,8 @@ class Command(BaseCommand):
 		self.stdout.write("Rendering as {}{}".format(name,
 			", working ahead when idle" if idle_work else ""))
 		forgotten = 0.0  # when requests and abandoned work were last cleared out
+		beating = threading.Thread(target=heartbeat, args=(name, stop), daemon=True)
+		beating.start()
 		try:
 			while not stop.is_set():
 				close_old_connections()
@@ -230,6 +245,8 @@ class Command(BaseCommand):
 						wait = max(poll, settings.IDLE_POLL)
 				stop.wait(wait)
 		finally:
+			stop.set()
+			beating.join()
 			# What it holds goes to the others now, not after RENDER_LEASE
 			released = queue.release_claims(name)
 			idle.release_sweeps(name)

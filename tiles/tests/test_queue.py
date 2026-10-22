@@ -8,7 +8,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from tiles import queue
-from tiles.models import TileRequest, TileState
+from tiles.models import TileRequest, TileState, TileSweep
 from tiles.common import NAME_LENGTH, content_hash, describe, file_name
 
 
@@ -167,6 +167,24 @@ class QueueTests(TestCase):
 		self.assertEqual((TileState.objects.get(x=1).status, request.status, request.claimed_by),
 			(TileState.FAILED, TileRequest.WAITING, ""))
 		self.assertEqual(idle.status, TileState.QUEUED)
+
+	def test_a_heartbeat_keeps_only_its_renderers_claims(self):
+		want(1, 2, 13); want(2, 2, 13)
+		queue.claim_next("a"); queue.claim_next("b")
+		TileSweep.objects.create(kind=TileState.SUMMARY, zoom=4, y=0, claimed_by="a")
+		long_ago = timezone.now() - timedelta(hours=1)
+		for model in (TileState, TileRequest, TileSweep):
+			model.objects.update(claimed_at=long_ago)
+		queue.heartbeat("a")
+		self.assertGreater(TileState.objects.get(claimed_by="a").claimed_at, long_ago)
+		self.assertGreater(TileRequest.objects.get(claimed_by="a").claimed_at, long_ago)
+		self.assertGreater(TileSweep.objects.get().claimed_at, long_ago)
+		self.assertEqual(TileState.objects.get(claimed_by="b").claimed_at, long_ago)
+		self.assertEqual(TileRequest.objects.get(claimed_by="b").claimed_at, long_ago)
+		# So only the other renderer's work is taken for abandoned
+		with override_settings(RENDER_LEASE=60):
+			self.assertEqual(queue.requeue_abandoned(), 1)
+		self.assertEqual(TileState.objects.get(claimed_by="a").status, TileState.RENDERING)
 
 	def test_a_stopping_renderer_releases_its_claims_at_once(self):
 		request = want(1, 2, 13)

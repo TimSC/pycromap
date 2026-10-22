@@ -70,8 +70,9 @@ services:
 
   web:
     <<: *pycromap
-    command: ["uvicorn", "pycromap.asgi:application", "--host", "0.0.0.0", "--port", "8000",
-              "--workers", "${WEB_WORKERS:-16}"]
+    # The requests left by the web server that stopped went with it: cleared
+    # out before this one takes any
+    command: ["sh", "-c", "python manage.py clear_requests && exec uvicorn pycromap.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_WORKERS:-16}"]
     ports:
       - "${PYCROMAP_PORT:-8082}:8000"
     depends_on:

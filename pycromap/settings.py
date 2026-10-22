@@ -268,10 +268,14 @@ IDLE_POLL = 10
 # each).
 IDLE_QUEUE = int(env("IDLE_QUEUE", "4096"))
 
-# Seconds after which a tile claimed by a renderer that has gone quiet is
-# given to another: longer than reading the map data and running tilemaker
-# can both take
-RENDER_LEASE = 2 * RENDER_TIMEOUT + 60
+# Seconds between a renderer's heartbeats: from a thread of its own, however
+# long its job takes, it marks what it holds (its job, the requests it
+# claimed, its sweep rows) as still held (claimed_at)
+RENDER_HEARTBEAT = 15
+# Seconds without a heartbeat after which what a renderer holds is given to
+# others (queue.requeue_abandoned, once a minute): it stopped without letting
+# go (killed, crashed, or a renderer of an older version)
+RENDER_LEASE = 6 * RENDER_HEARTBEAT
 # Renders tried before a tile is marked as failed
 RENDER_ATTEMPTS = 3
 
