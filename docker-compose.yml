@@ -5,7 +5,7 @@
 #   docker compose up --build
 #
 # The renderer runs RENDER_WORKERS (8) render_tiles processes, restarting
-# any that die (manage.py render_fleet):
+# any that die (manage.py render_fleet).
 #
 # The map is then at http://localhost:8082/ (PYCROMAP_PORT to change it).
 #
@@ -48,6 +48,8 @@ x-pycromap: &pycromap
     EDIT_CHECK_INTERVAL: ${EDIT_CHECK_INTERVAL:-600}
     CASCADE_MIN_ZOOM: ${CASCADE_MIN_ZOOM:-8}
     RENDER_TIMEOUT: ${RENDER_TIMEOUT:-600}
+    # render_tiles processes the renderer runs
+    RENDER_WORKERS: ${RENDER_WORKERS:-8}
     # Whether idle renderers work ahead (see README.md)
     RENDER_IDLE_WORK: ${RENDER_IDLE_WORK:-false}
     IDLE_RADIUS: ${IDLE_RADIUS:-4}

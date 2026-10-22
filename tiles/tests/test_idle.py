@@ -27,17 +27,16 @@ def request(zoom, x, y, when=None):
 class PlanTests(TestCase):
 	def test_the_sweep_begins_at_the_corner(self):
 		# Nobody has asked for anything: the fleet starts at the front of the
-		# highest zoom, tiles first (rendering one builds its summary); the
-		# summaries beneath catch up once the tiles have filled the budget
+		# base level's summaries, and never renders tiles ahead
 		planned = idle.plan(7, "w")
-		self.assertEqual(planned, [(TileState.TILE, 12, 0, x) for x in range(7)])
+		self.assertEqual(planned, [(TileState.SUMMARY, 12, 0, x) for x in range(7)])
 
 	def test_base_summaries_nearest_first(self):
 		request(12, 100, 100)
 		planned = idle.plan(10, "w")
 		self.assertEqual(planned[0], (TileState.SUMMARY, 12, 100, 100))
 		self.assertTrue(all(z == 12 for _, z, _, _ in planned[:9]))  # the ring
-		self.assertEqual(planned[9], (TileState.TILE, 12, 0, 0))  # then the sweep
+		self.assertEqual(planned[9], (TileState.SUMMARY, 12, 0, 0))  # then the sweep
 
 	def test_skips_what_exists_or_is_under_way(self):
 		request(12, 100, 100)
@@ -81,39 +80,35 @@ class SweepTests(TestCase):
 		# ...and then the rest of the planet, row by row, from the frontiers
 		self.assertEqual(planned[-8:], [(TileState.SUMMARY, 3, 0, x) for x in range(8)])
 
-	def test_a_rendered_tile_advances_the_frontier(self):
+	def test_a_stored_summary_advances_the_frontier(self):
 		planned = idle.plan(10000, "w")
-		self.assertIn((TileState.TILE, 4, 0, 0), planned)
-		# Rendering the corner tile builds its summary: the frontier of row 0
-		# moves on
-		TileState.objects.create(kind=TileState.TILE, zoom=4, x=0, y=0, status=TileState.DONE,
-			rendered_at=timezone.now())
+		self.assertIn((TileState.SUMMARY, 4, 0, 0), planned)
+		self.assertFalse([job for job in planned if job[0] == TileState.TILE])
 		build.store(4, 0, 0, pyo5m.OsmData(), 1)
 		planned = idle.plan(10000, "w")
-		self.assertNotIn((TileState.TILE, 4, 0, 0), planned)
-		# The frontier of row 0 moves on to the next unrendered tile
-		self.assertIn((TileState.TILE, 4, 0, 1), planned)
+		self.assertNotIn((TileState.SUMMARY, 4, 0, 0), planned)
+		# The frontier of row 0 moves on to the next missing summary
+		self.assertIn((TileState.SUMMARY, 4, 0, 1), planned)
 
 	def test_a_row_stays_claimed_until_it_is_full(self):
 		idle.plan(1, "w")
-		row = TileSweep.objects.get(kind=TileState.TILE, zoom=4, y=0)
+		row = TileSweep.objects.get(kind=TileState.SUMMARY, zoom=4, y=0)
 		self.assertIsNone(row.last_checked)  # not yet verified
 		self.assertEqual(row.claimed_by, "w")  # stays claimed while it has gaps
 
-	def test_the_sweep_skips_uncached_zooms(self):
+	@override_settings(TILE_ZOOMS={**TZOOMS, 4: {**TZOOMS[4], "cache": True}})
+	def test_the_sweep_builds_only_summaries(self):
 		request(4, 8, 8)
 		idle.plan(10, "w")
-		# The base zoom's tiles, whose rendering builds their summary; the
-		# coarser zoom's rows are made when its turn comes, and none for
-		# uncached zooms (the base's tile job renders those)
-		self.assertEqual(TileSweep.objects.filter(zoom=4, kind=TileState.TILE).count(), 1 << 4)
-		self.assertEqual(TileSweep.objects.filter(kind=TileState.TILE, zoom__gt=4).count(), 0)
-		self.assertEqual(TileSweep.objects.filter(kind=TileState.SUMMARY, zoom__gt=3).count(), 0)
-		# The tile frontier fills the whole budget, so the summary rows are only
-		# made once the tiles are done: the summaries' turn comes later
+		# The base level's rows; the coarser level's are made when its turn
+		# comes, and none for tiles, even of a cached zoom
+		self.assertEqual(TileSweep.objects.filter(zoom=4, kind=TileState.SUMMARY).count(), 1 << 4)
+		self.assertEqual(TileSweep.objects.filter(kind=TileState.TILE).count(), 0)
+		self.assertEqual(TileSweep.objects.filter(zoom=3).count(), 0)
+		# The base frontier fills the whole budget, so the coarser rows are
+		# only made once the base row is done: their turn comes later
 		for x in range(1 << 4):
-			TileState.objects.create(kind=TileState.TILE, zoom=4, x=x, y=0,
-				status=TileState.DONE, rendered_at=timezone.now())
+			build.store(4, x, 0, pyo5m.OsmData(), 1)
 		idle.plan(20, "w")
 		self.assertEqual(TileSweep.objects.filter(zoom=3, kind=TileState.SUMMARY).count(), 1 << 3)
 
@@ -122,7 +117,7 @@ class SweepTests(TestCase):
 class ClaimTests(TestCase):
 	def test_a_claimed_row_is_claimed_again(self):
 		idle.plan(1, "w1")
-		row = TileSweep.objects.filter(kind=TileState.TILE, zoom=4, y=0).first()
+		row = TileSweep.objects.filter(kind=TileState.SUMMARY, zoom=4, y=0).first()
 		# A renderer that went quiet: its row is given back, and a new
 		# renderer claims it (and keeps it, as the row has gaps)
 		row.claimed_by, row.claimed_at = "dead", timezone.now() - timedelta(hours=1)

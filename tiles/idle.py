@@ -9,8 +9,8 @@ rendered now (rendering an uncached zoom's tile ahead would be wasted). The
 highest zooms come first, then those nearest the newest requested tile: only
 tiles someone asked for count, not those idle renderers did.
 
-The rest of the planet is kept in TileSweep, one row per row of tiles (at each
-kind and zoom). Idle renderers claim the rows and recheck which tiles are
+The rest of the planet is summaries only (its tiles are rendered when asked
+for), kept in TileSweep, one row per row of tiles (at each summary level). Idle renderers claim the rows and recheck which tiles are
 rendered, so the first gap is what's left to do; the frontiers advance as the
 rows work, and the whole world eventually renders, and a request for a tile
 renders it, so the next recheck skips past it.
@@ -135,23 +135,15 @@ def _ready_around(kind, zoom, cx, cy, radius):
 
 
 def _candidate_levels(sweep):
-	"""The (zoom, kind) pairs that could be done, highest zoom first. For the
-	rings around the seeds, base-level summaries: the cheapest way to have the
-	pyramid near where someone is looking. For the planet sweep, the base
-	tiles instead: their rendering builds the summaries, so the sweep never
-	builds a summary it would render over."""
-	base = summaries.base_level()
-	base_is_tile = base is not None and (settings.TILE_ZOOMS.get(base) or {}).get("source") == "data"
-	levels = summaries.levels()
-	if sweep and base_is_tile:
-		levels = [level for level in levels if level != base]
-	kinds = [(level, TileState.SUMMARY) for level in levels]
-	# A tile of a cached zoom can be rendered ahead; the base tile, which is
-	# rendered for the sweep (its rendering builds its summary)
-	for zoom, config in settings.TILE_ZOOMS.items():
-		if not (config.get("cache") or (sweep and zoom == base and base_is_tile)):
-			continue
-		kinds.append((zoom, TileState.TILE))
+	"""The (zoom, kind) pairs that could be done, highest zoom first. The
+	summaries, base level first: the cheapest way to have the pyramid. For
+	the rings around the seeds, the tiles of cached zooms as well, to have
+	them ready where someone is looking; the planet sweep builds only the
+	summaries, leaving the tiles to be rendered when asked for."""
+	kinds = [(level, TileState.SUMMARY) for level in summaries.levels()]
+	if not sweep:
+		kinds.extend((zoom, TileState.TILE) for zoom, config in settings.TILE_ZOOMS.items()
+			if config.get("cache"))
 	# Highest zooms first; at the same zoom, tiles before summaries (rendering
 	# a tile from the map data builds its summary too)
 	return sorted(kinds, key=lambda k: (-k[0], k[1] != TileState.TILE))
@@ -228,7 +220,7 @@ def _frontiers(limit, rank, kind, zoom, worker):
 
 
 def _sweep(limit, worker):
-	"""Up to limit tiles from the fronts of the rows, the front of the highest
+	"""Up to limit summaries from the fronts of the rows, the front of the highest
 	zoom first, and the rest of the budget shared by the lower zooms, in
 	their order."""
 	frontiers = []
