@@ -22,21 +22,11 @@ class TileState(models.Model):
 	y = models.PositiveIntegerField()
 
 	status = models.CharField(max_length=16, choices=STATUSES, default=QUEUED)
-	# Higher is rendered sooner. For now, the time it was last asked for, so
-	# that the most recently requested tiles come first. A request's is when it
-	# came; an idle renderer's is negative (see tiles.idle), so a negative
-	# priority marks an idle job, and a request taking one over makes it
-	# positive.
+	# Idle work (tiles.idle) is queued here with a negative priority, higher
+	# rendered sooner; a tile claimed for requests (TileRequest) gets the time
+	# it was claimed, so a negative priority marks an idle job
 	priority = models.FloatField(default=0)
-	# How many summary jobs lie between this job and the request it is for: 0
-	# for a tile, 1 for a summary a tile needs, and so on. Jobs aren't made
-	# deeper than SUMMARY_MAX_DEPTH.
-	depth = models.PositiveSmallIntegerField(default=0)
 	queued_at = models.DateTimeField(null=True, blank=True)
-	# A job waiting for the summaries it needs: since when, and not to be
-	# claimed again before not_before
-	waiting_since = models.DateTimeField(null=True, blank=True)
-	not_before = models.DateTimeField(null=True, blank=True)
 
 	requested_at = models.DateTimeField(null=True, blank=True)
 	request_count = models.PositiveIntegerField(default=0)
@@ -136,6 +126,9 @@ class TileRequest(models.Model):
 	# The renderer that claimed it, and when
 	claimed_by = models.CharField(max_length=100, blank=True)
 	claimed_at = models.DateTimeField(null=True, blank=True)
+	# How many times its tile's rendering has failed while it waited: it is
+	# answered as failed once that reaches RENDER_ATTEMPTS
+	attempts = models.PositiveSmallIntegerField(default=0)
 	# Being answered with a redirect to the tile's cached file: there is
 	# nothing to render for it, and renderers don't claim it
 	cache_redirect = models.BooleanField(default=False)

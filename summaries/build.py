@@ -327,20 +327,6 @@ def missing(tiles):
 		if not current(TileSummary.objects.filter(zoom=tile[0], x=tile[1], y=tile[2])).exists()]
 
 
-def obtainable(level, x, y, depth):
-	"""Whether a missing summary could be built by a job at depth (see
-	TileState.depth): one at the base level from the map data, any other from
-	the summaries beneath it, those missing built by jobs one deeper. Jobs
-	aren't made deeper than SUMMARY_MAX_DEPTH, so a request for a coarse tile
-	never sets off building the pyramid beneath it."""
-	if depth > settings.SUMMARY_MAX_DEPTH:
-		return False
-	if level == base_level():
-		return True
-	return all(obtainable(*tile, depth + 1)
-		for tile in missing(tiles_beneath(level, x, y, finer_level(level))))
-
-
 def build_from_data(level, x, y, data, version):
 	"""Builds and stores the summary of the base level's tile from its map data,
 	unless one from this version of the map data is already stored. The base

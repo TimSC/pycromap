@@ -14,13 +14,13 @@ class AdminTests(TestCase):
 		TileState.objects.create(kind=TileState.TILE, zoom=12, x=1, y=2, status=TileState.DONE,
 			request_count=3, data_version=9, render_seconds=1.5)
 		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=3, y=4, status=TileState.QUEUED,
-			depth=1, priority=-1.0)
+			priority=-1.0)
 		response = self.client.get("/admin/tiles/tilestate/")
 		self.assertEqual(response.status_code, 200)
 		self.assertContains(response, "queued: 1")
 		self.assertContains(response, "idle queued: 1")
 		self.assertContains(response, "done: 1")
-		self.assertContains(response, "summary 12/3/4 (depth 1, idle)")
+		self.assertContains(response, "summary 12/3/4 (idle)")
 		self.assertContains(response, "v9")
 
 	def test_change_page_is_read_only(self):

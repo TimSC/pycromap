@@ -217,10 +217,6 @@ SUMMARY_SIMPLIFY_PIXELS = float(env("SUMMARY_SIMPLIFY_PIXELS", "16"))
 # their copies in adjacent tiles must match.
 MERGE_SUMMARY_OBJECTS = env("MERGE_SUMMARY_OBJECTS", "1") == "1"
 
-# The depth idle renderers' summary jobs are queued at. Requests don't queue
-# the summaries a tile needs, for now: a tile whose summaries aren't all built
-# is a placeholder (see README.md).
-SUMMARY_MAX_DEPTH = int(env("SUMMARY_MAX_DEPTH", "1"))
 
 
 # Where cached tiles are written, and the URL they are served from (by Django

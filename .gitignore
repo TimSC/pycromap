@@ -3,13 +3,12 @@
 # pycromap's own database
 db.sqlite3*
 test_db.sqlite3*
-# The database and tile cache, with Docker, except the tiles shared by
-# many (data/tilecache/common and shared), which are kept in git
+# The database and tile cache, with Docker, except the common tiles
+# (data/tilecache/common), which are kept in git
 data/*
 !data/tilecache/
 data/tilecache/*
 !data/tilecache/common/
-!data/tilecache/shared/
 # Rendered tiles (without Docker), and collected static files
 /tilecache/
 /staticfiles/

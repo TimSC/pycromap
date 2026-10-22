@@ -301,8 +301,7 @@ def reclaim_sweeps():
 
 def idle_queued():
 	"""How many idle jobs are queued and ready to be claimed."""
-	return TileState.objects.filter(Q(not_before__isnull=True) | Q(not_before__lte=timezone.now()),
-		status=TileState.QUEUED, priority__lt=0).count()
+	return TileState.objects.filter(status=TileState.QUEUED, priority__lt=0).count()
 
 
 @contextmanager
@@ -355,10 +354,8 @@ def queue_idle_work(worker):
 					defaults={"status": TileState.DONE})
 				if job.status in (TileState.QUEUED, TileState.RENDERING, TileState.FAILED):
 					continue
-				# At the deepest depth, so that it never makes jobs of its own;
-				# the negative priority marks it as idle work
+				# The negative priority marks it as idle work
 				TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED,
-					priority=IDLE_PRIORITY - rank, depth=settings.SUMMARY_MAX_DEPTH, queued_at=now,
-					not_before=None, waiting_since=None, attempts=0, error="")
+					priority=IDLE_PRIORITY - rank, queued_at=now, attempts=0, error="")
 				made += 1
 		return made

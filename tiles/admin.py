@@ -31,14 +31,14 @@ class TileRequestAdmin(admin.ModelAdmin):
 @admin.register(TileState)
 class TileStateAdmin(admin.ModelAdmin):
 	change_list_template = "tilestate_change_list.html"
-	list_display = ("job", "status", "requested", "queued", "waiting", "claimed", "render", "error")
+	list_display = ("job", "status", "requested", "queued", "claimed", "render", "error")
 	list_filter = ("kind", "status", "zoom")
 	search_fields = ("error",)
 	# The jobs to watch first: rendering, then queued in the order they will
 	# be taken, then failed, then done
 	ordering = ("-status", "-priority", "queued_at")
-	readonly_fields = ("kind", "zoom", "x", "y", "status", "priority", "depth",
-		"queued_at", "waiting_since", "not_before", "requested_at", "request_count",
+	readonly_fields = ("kind", "zoom", "x", "y", "status", "priority",
+		"queued_at", "requested_at", "request_count",
 		"claimed_by", "claimed_at", "attempts", "error", "rendered_at", "data_version",
 		"render_seconds", "file")
 	fields = readonly_fields
@@ -55,8 +55,6 @@ class TileStateAdmin(admin.ModelAdmin):
 	@admin.display(description="job")
 	def job(self, tile):
 		markers = []
-		if tile.depth:
-			markers.append("depth {}".format(tile.depth))
 		if tile.priority < 0:
 			markers.append("idle")
 		return "{} {}/{}/{}{}".format(tile.kind, tile.zoom, tile.x, tile.y,
@@ -71,15 +69,6 @@ class TileStateAdmin(admin.ModelAdmin):
 	@admin.display(description="queued")
 	def queued(self, tile):
 		return queue.span(tile.queued_at)
-
-	@admin.display(description="waiting")
-	def waiting(self, tile):
-		# A job stepped back for the summaries it needs: how long it has
-		# waited, and when it may be claimed again
-		if tile.waiting_since is None:
-			return ""
-		again = " " + queue.span(tile.not_before) if tile.not_before else ""
-		return "{} {}".format(queue.span(tile.waiting_since), again).strip()
 
 	@admin.display(description="claimed")
 	def claimed(self, tile):

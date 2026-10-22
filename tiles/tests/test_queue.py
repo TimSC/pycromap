@@ -79,7 +79,9 @@ class QueueTests(TestCase):
 		request = want(1)
 		queue.fail(queue.claim_next("a"), "boom")
 		request.refresh_from_db()
-		self.assertEqual((TileState.objects.get().status, request.status), (TileState.QUEUED, TileRequest.WAITING))
+		# The tile marked failed; its request waits again, keeping count
+		self.assertEqual((TileState.objects.get().status, request.status, request.attempts),
+			(TileState.FAILED, TileRequest.WAITING, 1))
 		tile = queue.claim_next("a")
 		self.assertEqual(tile.attempts, 2)
 		queue.fail(tile, "boom again")
@@ -154,13 +156,17 @@ class QueueTests(TestCase):
 	def test_abandoned_claims_are_requeued(self):
 		request = want(1, 2, 13)
 		queue.claim_next("a")
+		idle = TileState.objects.create(zoom=13, x=5, y=5, status=TileState.QUEUED, priority=-1)
+		queue.claim_next("b", idle=True)
 		self.assertEqual(queue.requeue_abandoned(), 0)
 		TileState.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
 		TileRequest.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
-		self.assertEqual(queue.requeue_abandoned(), 1)
-		request.refresh_from_db()
-		self.assertEqual((TileState.objects.get().status, request.status, request.claimed_by),
-			(TileState.QUEUED, TileRequest.WAITING, ""))
+		self.assertEqual(queue.requeue_abandoned(), 2)
+		request.refresh_from_db(); idle.refresh_from_db()
+		# The request waits again, its tile marked failed; the idle work is queued again
+		self.assertEqual((TileState.objects.get(x=1).status, request.status, request.claimed_by),
+			(TileState.FAILED, TileRequest.WAITING, ""))
+		self.assertEqual(idle.status, TileState.QUEUED)
 
 
 def vector_tile(features, layer="water"):

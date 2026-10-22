@@ -145,7 +145,7 @@ class QueueIdleTests(TestCase):
 		self.assertEqual(idle.queue_idle_work("w"), 4)  # IDLE_QUEUE of them
 		jobs = TileState.objects.filter(priority__lt=0)
 		self.assertEqual(jobs.count(), 4)
-		self.assertTrue(all(j.status == TileState.QUEUED and j.priority < 0 and j.depth == 1 for j in jobs))
+		self.assertTrue(all(j.status == TileState.QUEUED and j.priority < 0 for j in jobs))
 		self.assertEqual(idle.queue_idle_work("w"), 0)  # already enough queued
 		# A request comes first
 		TileRequest.objects.create(zoom=12, x=50, y=50, status=TileRequest.WAITING)

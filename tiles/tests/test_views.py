@@ -170,15 +170,13 @@ class TileViewTests(TransactionTestCase):
 		self.assertEqual((response["Content-Encoding"], response["Content-Type"]), ("gzip", "application/vnd.mapbox-vector-tile"))
 		self.assertIn("max-age=3600", response["Cache-Control"])
 
-	def test_cache_view_of_shared_files_and_unserved_zooms(self):
+	def test_cache_view_of_common_files_and_unserved_zooms(self):
 		from django.test import RequestFactory
 		from tiles.views import cached_tile
-		for path in ("shared/b9ec12dfaf95aecd2d421b23d140c886.pbf.gz", "5/1/2.0.pbf.gz",
-				"common/sea.pbf.gz", "common/7c402ade53ede63ca7ee6d5120fd40ab.pbf.gz"):
+		for path in ("5/1/2.0.pbf.gz", "common/sea.pbf.gz", "common/7c402ade53ede63ca7ee6d5120fd40ab.pbf.gz"):
 			(Path(self.cache.name) / path).parent.mkdir(parents=True, exist_ok=True)
 			(Path(self.cache.name) / path).write_bytes(b"tile")
 		with override_settings(DEBUG=True):
-			shared = cached_tile(RequestFactory().get("/"), "shared/b9ec12dfaf95aecd2d421b23d140c886.pbf.gz")
 			unserved = cached_tile(RequestFactory().get("/"), "5/1/2.0.pbf.gz")
 			named = cached_tile(RequestFactory().get("/"), "common/sea.pbf.gz")
 			hashed = cached_tile(RequestFactory().get("/"), "common/7c402ade53ede63ca7ee6d5120fd40ab.pbf.gz")
@@ -186,9 +184,7 @@ class TileViewTests(TransactionTestCase):
 		# by its content can't change
 		self.assertEqual(named["Cache-Control"], "public, max-age=86400")
 		self.assertEqual(hashed["Cache-Control"], "public, max-age=31536000, immutable")
-		# Named by its content: kept for good
-		self.assertEqual(shared["Cache-Control"], "public, max-age=31536000, immutable")
-		self.assertEqual(b"".join(shared.streaming_content), b"tile")
+		self.assertEqual(b"".join(hashed.streaming_content), b"tile")
 		self.assertEqual(unserved["Cache-Control"], "public, max-age=86400")
 
 	def test_cache_view_stays_in_the_cache(self):

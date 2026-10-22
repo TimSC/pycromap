@@ -239,7 +239,7 @@ def cached_tile(request, path):
 		raise Http404()
 	response = _gzipped_tile(FileResponse(open(full, "rb"), content_type=MVT_CONTENT_TYPE))
 	first, name = path.split("/")[0], path.split("/")[-1][:-len(".pbf.gz")]
-	if first == queue.SHARED_DIR or (first == queue.COMMON_DIR and len(name) == 32):
+	if first == queue.COMMON_DIR and len(name) == 32:
 		# Named by its content, so a name never has other content: kept for good
 		response["Cache-Control"] = "public, max-age=31536000, immutable"
 		return response

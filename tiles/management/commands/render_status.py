@@ -1,5 +1,5 @@
-"""Reports on the render queue: what each renderer is working on, what is
-queued, waiting for summaries, and failed.
+"""Reports on the render queue: what each renderer is working on, the
+requests waiting for a renderer, the idle work queued, and what failed.
 
     manage.py render_status            one report
     manage.py render_status --watch 5  a report every 5 seconds
@@ -10,11 +10,10 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.db.models import Q
 from django.utils import timezone
 
 from tiles import queue
-from tiles.models import TileState
+from tiles.models import TileRequest, TileState
 
 
 def _name(job):
@@ -62,26 +61,23 @@ class Command(BaseCommand):
 					seconds=settings.RENDER_LEASE) else ""
 				self.stdout.write("    " + _row(job, "claimed " + queue.span(job.claimed_at), stale))
 
-		# The queue, in the order the jobs will be taken
-		ready = TileState.objects.filter(Q(status=TileState.QUEUED) &
-			(Q(not_before__isnull=True) | Q(not_before__lte=now)))
+		# Requested work, newest first, as the renderers take it
+		waiting = TileRequest.objects.filter(status=TileRequest.WAITING, cancelled=False)
 		self.stdout.write("")
-		self.stdout.write("queued: {} ({} idle)".format(ready.count(), ready.filter(priority__lt=0).count()))
-		for job in ready.order_by("-priority", "queued_at")[:lines]:
-			markers = []
-			if job.depth:
-				markers.append("depth {}".format(job.depth))
-			if job.priority < 0:
-				markers.append("idle")
-			self.stdout.write("  " + _row(job, queue.span(job.queued_at), *markers))
+		self.stdout.write("requests waiting: {} ({} claimed, {} cancelled)".format(waiting.count(),
+			TileRequest.objects.filter(status=TileRequest.CLAIMED).count(),
+			TileRequest.objects.filter(cancelled=True).count()))
+		for request in waiting.order_by("-started_at")[:lines]:
+			tries = " (tried {} times)".format(request.attempts) if request.attempts else ""
+			self.stdout.write("  {:<24} {}{}".format("tile {}/{}/{}".format(request.zoom, request.x, request.y),
+				queue.span(request.started_at), tries))
 
-		# Waiting for the summaries they need
-		waiting = TileState.objects.filter(status=TileState.QUEUED, not_before__gt=now).order_by("not_before")
+		# Idle work, in the order it will be taken
+		ready = TileState.objects.filter(status=TileState.QUEUED, priority__lt=0)
 		self.stdout.write("")
-		self.stdout.write("waiting for summaries: {}".format(waiting.count()))
-		for job in waiting[:lines]:
-			self.stdout.write("  " + _row(job, "since " + queue.span(job.waiting_since),
-				"again " + queue.span(job.not_before)))
+		self.stdout.write("idle work queued: {}".format(ready.count()))
+		for job in ready.order_by("-priority", "queued_at")[:lines]:
+			self.stdout.write("  " + _row(job, queue.span(job.queued_at)))
 
 		# Failed
 		failed = TileState.objects.filter(status=TileState.FAILED).order_by("-requested_at")
