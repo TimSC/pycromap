@@ -1,4 +1,3 @@
-import time
 from datetime import timedelta
 
 import pyo5m
@@ -7,7 +6,7 @@ from django.utils import timezone
 
 from summaries import build
 from tiles import idle, queue
-from tiles.models import TileState, TileSweep
+from tiles.models import TileRequest, TileState, TileSweep
 
 ZOOMS = {12: {"source": "data", "cache": False, "summary": True},
 	11: {"source": "summary", "level": 12, "cache": False},
@@ -43,7 +42,7 @@ class PlanTests(TestCase):
 	def test_skips_what_exists_or_is_under_way(self):
 		request(12, 100, 100)
 		build.store(12, 100, 100, pyo5m.OsmData(), 1)
-		queue.queue_summaries([(12, 101, 100)], 10, 1)
+		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=101, y=100, status=TileState.QUEUED, priority=10)
 		planned = idle.plan(10, "w")
 		self.assertNotIn((TileState.SUMMARY, 12, 100, 100), planned)
 		self.assertNotIn((TileState.SUMMARY, 12, 101, 100), planned)
@@ -149,13 +148,13 @@ class QueueIdleTests(TestCase):
 		self.assertTrue(all(j.status == TileState.QUEUED and j.priority < 0 and j.depth == 1 for j in jobs))
 		self.assertEqual(idle.queue_idle_work("w"), 0)  # already enough queued
 		# A request comes first
-		queue.request_tile(12, 50, 50, rerender=True)
-		self.assertEqual(queue.claim_next("w").zoom, 12)
+		TileRequest.objects.create(zoom=12, x=50, y=50, status=TileRequest.WAITING)
+		self.assertEqual((queue.claim_next("w").x), 50)
 		self.assertGreaterEqual(TileState.objects.get(kind=TileState.TILE, x=50).priority, 0)
 
 	def test_requested_jobs_do_not_count_towards_the_idle_queue(self):
 		request(12, 100, 100)
-		queue.request_tile(12, 50, 50, rerender=True)
+		TileRequest.objects.create(zoom=12, x=50, y=50, status=TileRequest.WAITING)
 		# The request is queued, but the idle renderers still get their share
 		self.assertEqual(idle.queue_idle_work("w"), 4)
 
@@ -175,14 +174,6 @@ class QueueIdleTests(TestCase):
 			self.assertEqual(idle.queue_idle_work("w"), 0)  # another is planning
 		self.assertFalse(idle.planning_now())
 		self.assertEqual(idle.queue_idle_work("w"), 4)
-
-	def test_request_takes_over_an_idle_job(self):
-		request(12, 100, 100)
-		idle.queue_idle_work("w")
-		job = TileState.objects.filter(priority__lt=0).order_by("-priority").first()
-		queue.queue_summaries([(job.zoom, job.x, job.y)], time.time(), 1)
-		job.refresh_from_db()
-		self.assertGreater(job.priority, 0)  # the request has taken it over
 
 
 @override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True}, 13: {"source": "crop", "from": 12}},

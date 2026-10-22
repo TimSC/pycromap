@@ -109,25 +109,50 @@ class TileSweep(models.Model):
 
 
 class TileRequest(models.Model):
-	"""A request for a tile being answered: made when it comes, deleted when it
-	is answered. One whose client went away first (Django cancels the view)
-	is kept, flagged cancelled, for CANCELLED_REQUEST_KEEP seconds; one left
-	unanswered longer than a request waits (TILE_REQUEST_WAIT), as by a server
-	that stopped, is deleted too (see queue.forget_requests). Only kept, for
-	now: nothing about the render queue depends on it."""
+	"""A request for a tile, while it is answered; and the queue of requested
+	work. A request whose tile must be rendered waits (WAITING) until a
+	renderer claims it, with every other request waiting for the same tile
+	(CLAIMED), renders the tile, and answers them (DONE, or FAILED). The row
+	is deleted once the request is answered, whatever the answer. One whose
+	client went away first (Django cancels the view) is flagged cancelled,
+	isn't claimed, and is kept CANCELLED_REQUEST_KEEP seconds; one left longer
+	than a request waits (TILE_REQUEST_WAIT), as by a server that stopped, is
+	deleted too (see queue.forget_requests).
+
+	zoom, x and y are the tile to render: for a zoom cut from another
+	(TILE_ZOOMS' "crop"), the tile it is cut from."""
+	ANSWERING = ""         # being answered, with no rendering to wait for (yet)
+	WAITING = "waiting"    # waiting for a renderer to claim it
+	CLAIMED = "claimed"    # a renderer is rendering its tile
+	DONE = "done"          # its tile has been rendered
+	FAILED = "failed"      # its tile couldn't be rendered
+	STATUSES = [(s, s or "answering") for s in (ANSWERING, WAITING, CLAIMED, DONE, FAILED)]
 
 	zoom = models.PositiveSmallIntegerField()
 	x = models.PositiveIntegerField()
 	y = models.PositiveIntegerField()
 	started_at = models.DateTimeField(auto_now_add=True)
+	status = models.CharField(max_length=16, choices=STATUSES, default=ANSWERING, blank=True)
+	# The renderer that claimed it, and when
+	claimed_by = models.CharField(max_length=100, blank=True)
+	claimed_at = models.DateTimeField(null=True, blank=True)
+	# Being answered with a redirect to the tile's cached file: there is
+	# nothing to render for it, and renderers don't claim it
+	cache_redirect = models.BooleanField(default=False)
 	cancelled = models.BooleanField(default=False)
 	cancelled_at = models.DateTimeField(null=True, blank=True)
 
 	class Meta:
 		indexes = [
+			# The queue: the newest waiting requests first
+			models.Index(fields=["status", "-started_at"], name="tilerequest_queue"),
+			# Every request for a tile, to claim and answer them together
+			models.Index(fields=["zoom", "x", "y"], name="tilerequest_tile"),
 			models.Index(fields=["cancelled_at"], name="tilerequest_cancelled"),
 			models.Index(fields=["started_at"], name="tilerequest_started"),
 		]
 
 	def __str__(self):
-		return "request {}/{}/{}{}".format(self.zoom, self.x, self.y, " (cancelled)" if self.cancelled else "")
+		return "request {}/{}/{}{}{}{}".format(self.zoom, self.x, self.y,
+			" " + self.status if self.status else "", " (cache redirect)" if self.cache_redirect else "",
+			" (cancelled)" if self.cancelled else "")

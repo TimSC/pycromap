@@ -1,9 +1,12 @@
-"""Renders queued tiles and builds queued summaries, highest priority first,
-until stopped.
+"""Renders requested tiles, and the work queued for idle renderers, until
+stopped (see tiles.queue).
 
 The process claims jobs one at a time: a tile from map data (reading it,
 building its summary if the zoom marks one, and running tilemaker-core), a
-tile from summaries, or a summary. The work is CPU-bound Python, and threads
+tile from summaries that are all built already, or a summary from finer
+summaries that are. A job doesn't queue the summaries it needs, for now: a
+request for a tile whose summaries aren't all built gets a placeholder
+(tiles.views), and the idle renderers build the pyramid from the bottom. The work is CPU-bound Python, and threads
 in one process share the interpreter's lock, so one process renders one job
 at a time: run `RENDER_WORKERS` (8) of them to render more.
 """
@@ -39,28 +42,8 @@ def _tiles(tiles):
 	return ", ".join("{}/{}/{}".format(*tile) for tile in tiles[:5]) + (" ..." if len(tiles) > 5 else "")
 
 
-def wait_for_summaries(job, missing):
-	"""Queues jobs for the summaries a job needs, one deeper than it and ahead
-	of it, and puts it back to wait. The job fails for good if they would be
-	deeper than SUMMARY_MAX_DEPTH (it makes no jobs then), if one of them has
-	failed, or if it has waited too long."""
-	depth = job.depth + 1
-	if depth > settings.SUMMARY_MAX_DEPTH:
-		raise FinalError("summaries it needs aren't built, and jobs to build them would be deeper "
-			"than SUMMARY_MAX_DEPTH ({}): {}".format(settings.SUMMARY_MAX_DEPTH, _tiles(missing)))
-	failed = queue.queue_summaries(missing, job.priority + 1, depth)
-	if failed:
-		raise FinalError("summaries it needs failed: " + _tiles(failed))
-	try:
-		queue.defer(job)
-	except queue.WaitedTooLong as e:
-		raise FinalError("{}, still missing {}".format(e, _tiles(missing)))
-	return None
-
-
 def render_tile_job(job):
-	"""Renders a tile. Returns the tile and its data version, or None if it is
-	waiting for summaries."""
+	"""Renders a tile. Returns the tile and its data version."""
 	config = queue.zoom_config(job.zoom)
 	if config is None:
 		raise RenderError("zoom {} is not served".format(job.zoom))
@@ -77,21 +60,20 @@ def render_tile_job(job):
 	needed = summaries.tiles_beneath(job.zoom, job.x, job.y, config["level"])
 	missing = summaries.missing(needed)
 	if missing:
-		return wait_for_summaries(job, missing)
+		raise FinalError("summaries it is made from aren't built: " + _tiles(missing))
 	loaded = [summaries.load(*tile) for tile in needed]
 	return render_data(summaries.merge(loaded), job.zoom, job.x, job.y), max(v for _, v in loaded)
 
 
 def build_summary_job(job):
-	"""Builds a summary. Returns its data version, or None if it is waiting for
-	the finer summaries it is built from."""
+	"""Builds a summary. Returns its data version."""
 	if job.zoom == summaries.base_level():
 		data, version = read_tile_data(job.zoom, job.x, job.y)
 		summaries.build_from_data(job.zoom, job.x, job.y, data, version)
 		return version
 	missing = summaries.build_from_finer(job.zoom, job.x, job.y)
 	if missing:
-		return wait_for_summaries(job, missing)
+		raise FinalError("finer summaries it is built from aren't built: " + _tiles(missing))
 	return summaries.load(job.zoom, job.x, job.y)[1]
 
 
@@ -107,16 +89,13 @@ def render_one(process):
 	try:
 		if job.kind == TileState.SUMMARY:
 			version = build_summary_job(job)
-			if version is not None:
-				queue.finish_summary(job, version, time.monotonic() - started)
-				logger.info("Built %s: version %s, %.2fs", name, version, time.monotonic() - started)
+			queue.finish_summary(job, version, time.monotonic() - started)
+			logger.info("Built %s: version %s, %.2fs", name, version, time.monotonic() - started)
 		else:
-			result = render_tile_job(job)
-			if result is not None:
-				tile, version = result
-				cached = (queue.zoom_config(job.zoom) or {}).get("cache", False)
-				queue.finish(job, tile, version, time.monotonic() - started, cached)
-				logger.info("Rendered %s: %d bytes, version %s, %.2fs", name, len(tile), version, time.monotonic() - started)
+			tile, version = render_tile_job(job)
+			cached = (queue.zoom_config(job.zoom) or {}).get("cache", False)
+			queue.finish(job, tile, version, time.monotonic() - started, cached)
+			logger.info("Rendered %s: %d bytes, version %s, %.2fs", name, len(tile), version, time.monotonic() - started)
 	except Exception as e:
 		logger.warning("%s failed: %s", name, e)
 		queue.fail(job, e, final=isinstance(e, FinalError))

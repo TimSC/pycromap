@@ -24,8 +24,19 @@ class TileViewTests(TransactionTestCase):
 		# Whether the map has been edited: it hasn't, unless a test says so
 		self.edited = mock.patch("tiles.views.changes.changed_since", return_value=False)
 		self.changed_since = self.edited.start()
+		# The tiles requests asked to have rendered (queue.wait_for_render)
+		from tiles import queue
+		wait_for_render, self.asked = queue.wait_for_render, []
+
+		def asking(request_id):
+			request = TileRequest.objects.get(pk=request_id)
+			self.asked.append((request.zoom, request.x, request.y))
+			wait_for_render(request_id)
+		self.asking = mock.patch("tiles.views.queue.wait_for_render", side_effect=asking)
+		self.asking.start()
 
 	def tearDown(self):
+		self.asking.stop()
 		self.edited.stop()
 		self.settings.disable()
 		self.cache.cleanup()
@@ -37,6 +48,34 @@ class TileViewTests(TransactionTestCase):
 		(Path(self.cache.name) / path).write_bytes(b"tile")
 		return TileState.objects.create(zoom=zoom, x=x, y=y, status=TileState.DONE, rendered_at=timezone.now(),
 			file=path, data_version=version)
+
+	def flags(self):
+		"""Patches the flagging of cache redirects to record, for each request
+		flagged, whether its row was flagged (rows are deleted once answered)."""
+		from tiles import queue
+		original, seen = queue.answered_by_cache, []
+
+		async def flagging(request_id):
+			await original(request_id)
+			seen.append(await TileRequest.objects.filter(pk=request_id).values_list("cache_redirect", flat=True).afirst())
+		return mock.patch("tiles.views.queue.answered_by_cache", flagging), seen
+
+	def test_a_cache_redirect_is_flagged_in_the_request_table(self):
+		self.cached()
+		patch, seen = self.flags()
+		with patch:
+			response = self.client.get("/tiles/12/1/2.pbf")
+		self.assertEqual(response.status_code, 302)
+		self.assertEqual(seen, [True])
+		self.assertFalse(TileRequest.objects.exists())  # answered: deleted all the same
+
+	def test_other_answers_are_not_flagged(self):
+		# An empty cached tile (no file) and a placeholder answer otherwise
+		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="")
+		patch, seen = self.flags()
+		with patch:
+			self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 204)
+		self.assertEqual(seen, [])
 
 	def test_cached_tile_is_kept_while_its_area_is_unedited(self):
 		from tiles.tilegeo import tile_area
@@ -50,8 +89,8 @@ class TileViewTests(TransactionTestCase):
 	def test_cached_tile_is_rendered_again_once_its_area_is_edited(self):
 		self.cached()
 		self.changed_since.return_value = True
-		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)  # queued; no renderer here
-		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)  # waited; no renderer here
+		self.assertEqual(self.asked, [(12, 1, 2)])
 
 	def test_cached_tile_is_served_if_the_map_cant_say(self):
 		from django.db import OperationalError
@@ -86,7 +125,7 @@ class TileViewTests(TransactionTestCase):
 		self.client.get("/tiles/12/1/2.pbf")
 		tile.refresh_from_db()
 		self.assertIsNone(tile.edits_checked_at)
-		self.assertEqual(tile.status, TileState.QUEUED)
+		self.assertEqual(self.asked, [(12, 1, 2)])
 
 	def test_a_failed_check_is_not_marked_checked(self):
 		from django.db import OperationalError
@@ -170,7 +209,7 @@ class TileViewTests(TransactionTestCase):
 	def test_tile_rendered_before_its_zoom_was_cached_is_rendered_again(self):
 		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), data=b"tile")
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)
-		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+		self.assertEqual(self.asked, [(12, 1, 2)])
 
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_cached_tile_older_than_max_age_is_rendered_again(self):
@@ -179,7 +218,7 @@ class TileViewTests(TransactionTestCase):
 		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE,
 			rendered_at=timezone.now() - timedelta(seconds=3601), file="12/1/2.5.pbf.gz")
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)
-		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+		self.assertEqual(self.asked, [(12, 1, 2)])
 
 	def test_cropped_from_the_cached_tile(self):
 		from tiles.tests.test_crop import decoded, vector_tile
@@ -200,13 +239,15 @@ class TileViewTests(TransactionTestCase):
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_crop_waits_for_the_tile_it_comes_from(self):
 		self.assertEqual(self.client.get("/tiles/14/5/8.pbf").status_code, 503)
-		self.assertEqual(TileState.objects.get(zoom=12).status, TileState.QUEUED)
+		self.assertEqual(self.asked, [(12, 1, 2)])  # the tile it is cut from
 
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_times_out_without_a_renderer(self):
 		response = self.client.get("/tiles/13/1/2.pbf")
 		self.assertEqual(response.status_code, 503)
-		self.assertEqual(TileState.objects.get().status, TileState.QUEUED)
+		self.assertEqual(self.asked, [(13, 1, 2)])
+		# Answered (not ready), so no longer waiting
+		self.assertFalse(TileRequest.objects.exists())
 
 	def test_uncached_tile_is_rendered_and_returned(self):
 		stop = threading.Event()
@@ -271,7 +312,7 @@ class TileRequestTests(TransactionTestCase):
 			# Waiting for a renderer when the client goes
 			for _ in range(100):
 				await asyncio.sleep(0.05)
-				if await TileState.objects.filter(status=TileState.QUEUED).aexists():
+				if await TileRequest.objects.filter(status=TileRequest.WAITING).aexists():
 					break
 			self.assertTrue(await TileRequest.objects.filter(cancelled=False).aexists())
 			task.cancel()
@@ -282,10 +323,10 @@ class TileRequestTests(TransactionTestCase):
 		request = TileRequest.objects.get()
 		self.assertEqual((request.zoom, request.x, request.y, request.cancelled), (12, 1, 2, True))
 		self.assertIsNotNone(request.cancelled_at)
-		# The render queue is as it was: still queued, at the request's priority
-		tile = TileState.objects.get()
-		self.assertEqual(tile.status, TileState.QUEUED)
-		self.assertGreater(tile.priority, 0)
+		# It no longer wants its tile rendered: a renderer doesn't claim it
+		from tiles import queue
+		self.assertEqual(request.status, TileRequest.WAITING)
+		self.assertIsNone(queue.claim_next("w"))
 
 	def test_a_request_that_fails_is_not_kept(self):
 		import asyncio

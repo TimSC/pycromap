@@ -43,14 +43,12 @@ def _placeholder():
 
 
 def _can_render(zoom, x, y, config):
-	"""Whether a tile can be rendered soon: from map data, or from summaries
-	that exist or can be built within SUMMARY_MAX_DEPTH (see
-	summaries.build.obtainable). The tile's job is depth 0, so the jobs for
-	its summaries would be depth 1."""
+	"""Whether a tile can be rendered now: from map data, or from summaries
+	that are all built. A request doesn't queue the summaries a tile needs,
+	for now: the idle renderers build them."""
 	if config["source"] != "summary":
 		return True
-	needed = summaries.tiles_beneath(zoom, x, y, config["level"])
-	return all(summaries.obtainable(*tile, 1) for tile in summaries.missing(needed))
+	return not summaries.missing(summaries.tiles_beneath(zoom, x, y, config["level"]))
 
 
 def _gzipped_tile(response):
@@ -116,34 +114,39 @@ def _needs_rendering(existing, config):
 
 
 @sync_to_async
-def _ask_for(zoom, x, y, config):
-	"""Records a request for a tile and queues it if it needs rendering:
-	(its state, when it was queued if it is waiting to be rendered, or None),
-	or (None, None, the response to give instead: a placeholder)."""
+def _ask_for(zoom, x, y, config, request_id):
+	"""Records a request for a tile, and if the tile needs rendering, queues
+	the request (queue.wait_for_render): (its state if it needn't be
+	rendered, whether the request waits for a renderer, None), or (None,
+	False, the response to give instead: a placeholder)."""
 	existing = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x=x, y=y).first()
 	rerender = _needs_rendering(existing, config)
-	if rerender and not _can_render(zoom, x, y, config):
-		queue.log_request(zoom, x, y)
-		return None, None, _placeholder()
-	tile, queued_at = queue.request_tile(zoom, x, y, rerender=rerender)
-	return tile, queued_at, None
+	queue.log_request(zoom, x, y)
+	if not rerender:
+		return existing, False, None
+	if not _can_render(zoom, x, y, config):
+		return None, False, _placeholder()
+	queue.wait_for_render(request_id)
+	return None, True, None
 
 
-async def _obtain(zoom, x, y, config):
+async def _obtain(zoom, x, y, config, request_id):
 	"""A tile, rendered if need be: (its state, None), or (None, the response
-	to give instead: a placeholder, or that it isn't ready yet). Waiting for
-	the renderer holds no thread."""
-	tile, queued_at, response = await _ask_for(zoom, x, y, config)
+	to give instead: a placeholder, or that it isn't ready yet). The request
+	(request_id) is the queue's entry for it; waiting for a renderer to
+	render it holds no thread."""
+	tile, waiting, response = await _ask_for(zoom, x, y, config, request_id)
 	if response is not None:
 		return None, response
-	if queued_at is None:
+	if not waiting:
 		return tile, None
-	ready = await queue.await_tile(tile.pk, queued_at, settings.TILE_REQUEST_WAIT)
-	if ready is None:
-		response = _no_store(HttpResponse("The tile is not ready", status=503, content_type="text/plain"))
-		response["Retry-After"] = "2"
-		return None, response
-	return ready, None
+	status = await queue.await_render(request_id, settings.TILE_REQUEST_WAIT)
+	if status == TileRequest.DONE:
+		return await TileState.objects.aget(kind=TileState.TILE, zoom=zoom, x=x, y=y), None
+	response = _no_store(HttpResponse("The tile couldn't be rendered" if status == TileRequest.FAILED else
+		"The tile is not ready", status=503, content_type="text/plain"))
+	response["Retry-After"] = "2"
+	return None, response
 
 
 def _tile_data(tile, cached):
@@ -162,16 +165,24 @@ async def tile(request, zoom, x, y):
 	and so that Django can cancel it when the client goes away, as a map does
 	with the tiles it no longer shows; under ASGI, that is.
 
-	Each request is kept as a TileRequest while it is answered: deleted once
-	it is (whatever the answer), or flagged cancelled if the client goes away
-	first, to be deleted later (queue.forget_requests)."""
+	Each request is kept as a TileRequest while it is answered, for the tile
+	it needs rendered (for a zoom cut from another, the tile it is cut from):
+	the queue's entry, if that must be rendered. It is deleted once the
+	request is answered (whatever the answer), or flagged cancelled if the
+	client goes away first, not to be rendered for it, and deleted later
+	(queue.forget_requests)."""
 	config = queue.zoom_config(zoom)
 	if config is None or not valid_tile(zoom, x, y):
 		raise Http404("Zoom {} is not served".format(zoom))
 
-	tracked = await TileRequest.objects.acreate(zoom=zoom, x=x, y=y)
+	if config["source"] == "crop":
+		scale = 1 << (zoom - config["from"])
+		needs = (config["from"], x // scale, y // scale)
+	else:
+		needs = (zoom, x, y)
+	tracked = await TileRequest.objects.acreate(zoom=needs[0], x=needs[1], y=needs[2])
 	try:
-		response = await _answer(config, zoom, x, y)
+		response = await _answer(config, zoom, x, y, tracked.pk)
 	except asyncio.CancelledError:
 		# Shielded, so that it is done though the view is being cancelled
 		await asyncio.shield(TileRequest.objects.filter(pk=tracked.pk).aupdate(
@@ -184,7 +195,7 @@ async def tile(request, zoom, x, y):
 	return response
 
 
-async def _answer(config, zoom, x, y):
+async def _answer(config, zoom, x, y, request_id):
 	"""The response to a request for a tile of a served zoom."""
 	if config["source"] == "crop":
 		# Cut from the tile covering it at a lower zoom, which is obtained as
@@ -194,7 +205,7 @@ async def _answer(config, zoom, x, y):
 		scale = 1 << (zoom - parent_zoom)
 		parent_x, parent_y = x // scale, y // scale
 		await sync_to_async(queue.log_request)(zoom, x, y)
-		parent, response = await _obtain(parent_zoom, parent_x, parent_y, parent_config)
+		parent, response = await _obtain(parent_zoom, parent_x, parent_y, parent_config, request_id)
 		if response is not None:
 			return response
 
@@ -207,10 +218,14 @@ async def _answer(config, zoom, x, y):
 			return _no_store(HttpResponse(status=204))
 		return _no_store(_gzipped_tile(HttpResponse(data, content_type=MVT_CONTENT_TYPE)))
 
-	tile, response = await _obtain(zoom, x, y, config)
+	tile, response = await _obtain(zoom, x, y, config, request_id)
 	if response is not None:
 		return response
-	return _respond(tile, config.get("cache", False))
+	cached = config.get("cache", False)
+	if cached and tile.file:
+		# A redirect to the cached file: flagged, as nothing needs rendering
+		await queue.answered_by_cache(request_id)
+	return _respond(tile, cached)
 
 
 @require_GET
