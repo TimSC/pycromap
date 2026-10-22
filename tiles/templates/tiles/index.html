@@ -40,8 +40,12 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		}
 		style.glyphs = fromThisServer(style.glyphs);
 		// The tiles drawn on a globe, which flattens into the usual map as it
-		// zooms in; the globe button switches to the flat map and back
-		style.projection = { type: 'globe' };
+		// zooms in, unless the address asks for another projection
+		// (?projection=mercator for the flat map, or vertical-perspective);
+		// the globe button switches between the globe and the flat map
+		var projections = ['globe', 'mercator', 'vertical-perspective'];
+		var asked = new URLSearchParams(window.location.search).get('projection');
+		style.projection = { type: projections.includes(asked) ? asked : 'globe' };
 
 		var bounds = data['bounds'].split(',');
 		map = new maplibregl.Map({
