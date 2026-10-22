@@ -45,9 +45,13 @@ LOCKED_TABLES = (
 # United States or France whole for every tile they reach into is most of
 # what a tile there costs. A boundary of a park is drawn as an area.
 AREA_KEYS = frozenset(("landuse", "natural", "leisure", "water", "waterway", "wetland", "amenity", "building",
-	"aeroway", "place", "man_made", "tourism", "historic", "shop", "sport", "highway", "railway", "landcover",
+	"aeroway", "man_made", "tourism", "historic", "shop", "sport", "highway", "railway", "landcover",
 	"area", "area:highway", "building:part", "public_transport", "military", "power", "office", "craft"))
 AREA_BOUNDARIES = frozenset(("national_park", "protected_area"))
+# Places the profile labels at a way or relation's centroid: only islands.
+# Others are labelled from nodes, so a country's boundary tagged
+# place=country (as Canada's is) is still nothing but a boundary.
+AREA_PLACES = frozenset(("island",))
 
 
 def needs_whole(tags):
@@ -56,7 +60,7 @@ def needs_whole(tags):
 	boundary = tags.get("boundary")
 	if boundary is None or boundary in AREA_BOUNDARIES:
 		return True
-	return any(key in AREA_KEYS for key in tags)
+	return tags.get("place") in AREA_PLACES or any(key in AREA_KEYS for key in tags)
 
 
 class MapDataError(Exception):

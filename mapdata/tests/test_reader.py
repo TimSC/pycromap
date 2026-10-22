@@ -41,7 +41,9 @@ class NeedsWholeTests(SimpleTestCase):
 
 	def test_boundaries_alone_are_not(self):
 		for tags in ({"boundary": "administrative", "admin_level": "2", "name": "United States of America",
-				"maritime": "yes"}, {"boundary": "postal_code", "postal_code": "PO1"}):
+				"maritime": "yes"}, {"boundary": "postal_code", "postal_code": "PO1"},
+				# Labelled from its node, not its area
+				{"boundary": "administrative", "admin_level": "2", "place": "country", "name": "Canada"}):
 			self.assertFalse(needs_whole(tags), tags)
 
 
