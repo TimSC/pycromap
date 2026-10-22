@@ -52,25 +52,29 @@ AREA_BOUNDARIES = frozenset(("national_park", "protected_area"))
 # Others are labelled from nodes, so a country's boundary tagged
 # place=country (as Canada's is) is still nothing but a boundary.
 AREA_PLACES = frozenset(("island",))
-# Areas the profile doesn't draw, for now: a multipolygon that is nothing but
-# one of these is not read whole either. Glaciers: the Greenland ice sheet
-# alone is 55,000 nodes, read for every tile its box reaches, mostly to draw
-# nothing.
-NOT_DRAWN = frozenset((("natural", "glacier"),))
+# Areas the profile doesn't draw, for now, though their keys are in AREA_KEYS:
+# a multipolygon that is nothing but one of these is not read whole either.
+# Glaciers: the Greenland ice sheet alone is 55,000 nodes, read for every tile
+# its box reaches, mostly to draw nothing. Riverbanks: the profile has no rule
+# for them (the Nile's is 45,000 nodes).
+NOT_DRAWN = frozenset((("natural", "glacier"), ("waterway", "riverbank")))
 
 
 def needs_whole(tags):
 	"""Whether a multipolygon must be read whole, every member way, to be
-	drawn: unless it is nothing but a boundary (see AREA_KEYS), or an area
-	not drawn (NOT_DRAWN)."""
-	boundary = tags.get("boundary")
-	if boundary in AREA_BOUNDARIES:
+	drawn: only if something about it is drawn as an area, or labelled at its
+	centroid (AREA_KEYS, AREA_BOUNDARIES, AREA_PLACES), less what isn't drawn
+	(NOT_DRAWN). A multipolygon tagged with nothing the profile draws, as a
+	country's land mass (land_area=administrative: Germany's is 100,000
+	nodes) or a continent (labelled from its node), is not: what the profile
+	draws from its ways, it draws from the ways in the tile."""
+	if tags.get("boundary") in AREA_BOUNDARIES or tags.get("place") in AREA_PLACES:
 		return True
-	if tags.get("place") in AREA_PLACES or any(key in AREA_KEYS and (key, value) not in NOT_DRAWN
-			for key, value in tags.items()):
+	if any(key in AREA_KEYS and (key, value) not in NOT_DRAWN for key, value in tags.items()):
 		return True
-	# Untagged but for its type: perhaps drawn from tags on its ways
-	return boundary is None and not any(tag in NOT_DRAWN for tag in tags.items())
+	# Tagged with nothing but its type: an old-style multipolygon, drawn
+	# from the tags on its outer way, so it must be whole
+	return set(tags) <= {"type"}
 
 
 class MapDataError(Exception):

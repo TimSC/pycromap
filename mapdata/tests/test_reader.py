@@ -48,6 +48,11 @@ class NeedsWholeTests(SimpleTestCase):
 
 	def test_areas_not_drawn_are_not(self):
 		self.assertFalse(needs_whole({"type": "multipolygon", "natural": "glacier", "name": "Indlandsis"}))
+		self.assertFalse(needs_whole({"type": "multipolygon", "waterway": "riverbank", "name": "Nile"}))
+		# Nothing the profile draws: a land mass, a continent
+		self.assertFalse(needs_whole({"type": "multipolygon", "name": "Deutschland (Landmasse)",
+			"land_area": "administrative", "admin_level": "2"}))
+		self.assertFalse(needs_whole({"type": "multipolygon", "name": "Antarctica", "place": "continent"}))
 		# Unless drawn for another tag
 		self.assertTrue(needs_whole({"natural": "glacier", "place": "island"}))
 		self.assertTrue(needs_whole({"natural": "glacier", "landuse": "forest"}))
