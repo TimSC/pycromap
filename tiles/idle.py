@@ -341,8 +341,11 @@ def queue_idle_work(worker):
 			return 0
 		now = timezone.now()
 		made = 0
-		for rank, (kind, zoom, x, y) in enumerate(plan(wanted, worker)):
-			with transaction.atomic():
+		jobs = plan(wanted, worker)
+		# Queued in one transaction: one commit, not one a job, as each
+		# commit holds the database's one write lock
+		with transaction.atomic():
+			for rank, (kind, zoom, x, y) in enumerate(jobs):
 				job, _ = TileState.objects.get_or_create(kind=kind, zoom=zoom, x=x, y=y,
 					defaults={"status": TileState.DONE})
 				if job.status in (TileState.QUEUED, TileState.RENDERING, TileState.FAILED):

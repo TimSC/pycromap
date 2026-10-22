@@ -101,7 +101,11 @@ DATABASES = {
 		"OPTIONS": {
 			"timeout": 30,
 			"transaction_mode": "IMMEDIATE",
-			"init_command": "PRAGMA journal_mode=WAL;",
+			# A commit in WAL mode needn't wait for the disk (synchronous=NORMAL):
+			# the database stays sound, and a power cut can lose only the last
+			# commits, work done again. Each commit holds the one write lock,
+			# so waiting for the disk there stalls every renderer.
+			"init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
 		},
 		# A file beside the database, as tests render in threads: an in-memory
 		# database's shared cache fails at once on a locked table, rather than
