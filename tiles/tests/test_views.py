@@ -17,8 +17,7 @@ class TileViewTests(TransactionTestCase):
 	def setUp(self):
 		self.cache = tempfile.TemporaryDirectory()
 		self.settings = override_settings(TILE_CACHE_DIR=Path(self.cache.name), TILE_CACHE_URL="/tilecache/",
-			TILE_ZOOMS={13: {"source": "data", "cache": False}, 12: {"source": "data", "cache": True, "max_age": 3600},
-				14: {"source": "crop", "from": 12}},
+			TILE_ZOOMS={13: {"source": "data", "cache": False}, 12: {"source": "data", "cache": True, "max_age": 3600}},
 			TILE_REQUEST_WAIT=5, EDIT_CHECK_INTERVAL=0)
 		self.settings.enable()
 		# Whether the map has been edited: it hasn't, unless a test says so
@@ -216,27 +215,6 @@ class TileViewTests(TransactionTestCase):
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)
 		self.assertEqual(self.asked, [(12, 1, 2)])
 
-	def test_cropped_from_the_cached_tile(self):
-		from tiles.tests.test_crop import decoded, vector_tile
-		(Path(self.cache.name) / "12/1").mkdir(parents=True)
-		(Path(self.cache.name) / "12/1/2.5.pbf.gz").write_bytes(
-			vector_tile([{"geometry": "POINT (3000 1000)", "properties": {"name": "here"}}]))
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="12/1/2.5.pbf.gz")
-		# The third of four across, the first down
-		response = self.client.get("/tiles/14/6/8.pbf")
-		self.assertEqual(response.status_code, 200)
-		self.assertEqual((response["Content-Encoding"], response["Cache-Control"]), ("gzip", "no-store"))
-		self.assertEqual(decoded(response.content)["place"]["features"][0]["geometry"]["coordinates"], [(3000 - 2048) * 4, 1000 * 4])
-		self.assertEqual(self.client.get("/tiles/14/4/8.pbf").status_code, 204)
-		# Logged as asked for, as is the tile it came from
-		self.assertEqual(TileState.objects.get(zoom=14, x=6, y=8).request_count, 1)
-		self.assertEqual(TileState.objects.get(zoom=12).request_count, 2)
-
-	@override_settings(TILE_REQUEST_WAIT=0.2)
-	def test_crop_waits_for_the_tile_it_comes_from(self):
-		self.assertEqual(self.client.get("/tiles/14/5/8.pbf").status_code, 503)
-		self.assertEqual(self.asked, [(12, 1, 2)])  # the tile it is cut from
-
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_times_out_without_a_renderer(self):
 		response = self.client.get("/tiles/13/1/2.pbf")
@@ -323,35 +301,6 @@ class TileRequestTests(TransactionTestCase):
 		from tiles import queue
 		self.assertEqual(request.status, TileRequest.WAITING)
 		self.assertIsNone(queue.claim_next("w"))
-
-	def test_a_request_keeps_its_tiles_direct_dependencies(self):
-		import asyncio
-		from summaries import build
-
-		async def ask_then_go(path, *args):
-			from django.test import RequestFactory
-			from tiles import views
-			task = asyncio.create_task(views.tile(RequestFactory().get(path), *args))
-			for _ in range(100):
-				await asyncio.sleep(0.05)
-				if await TileRequest.objects.filter(status=TileRequest.WAITING, cancelled=False).aexists():
-					break
-			task.cancel()
-			with self.assertRaises(asyncio.CancelledError):
-				await task
-
-		zooms = {12: {"source": "data", "cache": True, "summary": True}, 13: {"source": "crop", "from": 12},
-			11: {"source": "summary", "level": 12, "cache": True}}
-		with override_settings(TILE_ZOOMS=zooms):
-			for level, x, y in build.tiles_beneath(11, 3, 4, 12):
-				build.store(level, x, y, pyo5m.OsmData(), 1)  # built, so the request waits
-			asyncio.run(ask_then_go("/tiles/11/3/4.pbf", 11, 3, 4))
-			asyncio.run(ask_then_go("/tiles/13/1/2.pbf", 13, 1, 2))
-		kept = {(r.zoom, r.x, r.y): r.dependencies for r in TileRequest.objects.all()}
-		self.assertEqual(kept[(11, 3, 4)], [["summary", 12, 6, 8], ["summary", 12, 6, 9],
-			["summary", 12, 7, 8], ["summary", 12, 7, 9]])
-		# A cut zoom's request is for the tile it is cut from, made from the map data
-		self.assertEqual(kept[(12, 0, 1)], [])
 
 	def test_a_request_that_fails_is_not_kept(self):
 		import asyncio

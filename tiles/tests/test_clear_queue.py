@@ -14,7 +14,7 @@ class ClearQueueTests(TestCase):
 		TileState.objects.create(kind=TileState.TILE, zoom=12, x=1, y=2, status=TileState.QUEUED,
 			queued_at=timezone.now(), attempts=1, error="boom")
 		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=3, y=4, status=TileState.QUEUED,
-			priority=-1.0, queued_at=timezone.now())
+			idle=True, priority=-1, queued_at=timezone.now())
 		kept = TileState.objects.create(kind=TileState.TILE, zoom=10, x=5, y=6, status=TileState.RENDERING,
 			claimed_by="host:1", claimed_at=timezone.now())
 		out = StringIO()

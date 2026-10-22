@@ -22,9 +22,10 @@ class TileState(models.Model):
 	y = models.PositiveIntegerField()
 
 	status = models.CharField(max_length=16, choices=STATUSES, default=QUEUED)
-	# Idle work (tiles.idle) is queued here with a negative priority, higher
-	# rendered sooner; a tile claimed for requests (TileRequest) gets the time
-	# it was claimed, so a negative priority marks an idle job
+	# Work for idle renderers (tiles.idle), queued here, rather than claimed
+	# for requests (TileRequest); among idle jobs, a higher priority is taken
+	# sooner
+	idle = models.BooleanField(default=False)
 	priority = models.FloatField(default=0)
 	queued_at = models.DateTimeField(null=True, blank=True)
 
@@ -107,10 +108,7 @@ class TileRequest(models.Model):
 	client went away first (Django cancels the view) is flagged cancelled,
 	isn't claimed, and is kept CANCELLED_REQUEST_KEEP seconds; one left longer
 	than a request waits (TILE_REQUEST_WAIT), as by a server that stopped, is
-	deleted too (see queue.forget_requests).
-
-	zoom, x and y are the tile to render: for a zoom cut from another
-	(TILE_ZOOMS' "crop"), the tile it is cut from."""
+	deleted too (see queue.forget_requests)."""
 	ANSWERING = ""         # being answered, with no rendering to wait for (yet)
 	WAITING = "waiting"    # waiting for a renderer to claim it
 	CLAIMED = "claimed"    # a renderer is rendering its tile
@@ -132,10 +130,6 @@ class TileRequest(models.Model):
 	# Being answered with a redirect to the tile's cached file: there is
 	# nothing to render for it, and renderers don't claim it
 	cache_redirect = models.BooleanField(default=False)
-	# What its tile is made from directly, built or not, as [kind, zoom, x, y]
-	# (queue.dependencies): none for a tile from the map data; the summaries
-	# beneath it at its zoom's level for one from summaries
-	dependencies = models.JSONField(default=list, blank=True)
 	cancelled = models.BooleanField(default=False)
 	cancelled_at = models.DateTimeField(null=True, blank=True)
 

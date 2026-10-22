@@ -13,13 +13,12 @@ A map tile server for a [pycrocosm](https://github.com/TimSC/pycrocosm) map data
 
 | Zoom | Made from | Kept |
 |------|-----------|------|
-| 14, 13 | cut from the z12 tile covering it, scaled up | no |
 | 12 | the map data | as a file, rendered again when asked for after an hour (`max_age`) |
 | 11, 10 | the level-12 summaries beneath it | as a file |
 | 9, 8 | the level-10 summaries beneath it | as a file |
 | 7, 6 | the level-8 summaries beneath it | as a file |
 
-z12 is the highest zoom rendered: the profile gives it everything upstream's profile draws up to z14, so z13 and z14 need no rendering of their own. Cutting a tile from a lower zoom's (`"source": "crop"`) decodes it, scales the part covered up, clips it a little beyond the edge, and encodes it again: quick, without the map data, but no more precise than the tile it came from. The tile it comes from is obtained as a request for it would be.
+z12 is the highest zoom rendered: the profile gives it everything upstream's profile draws up to z14, and the map viewer scales its tiles up beyond it, to `VIEWER_MAX_ZOOM`.
 
 ### The profile
 
@@ -27,7 +26,7 @@ z12 is the highest zoom rendered: the profile gives it everything upstream's pro
 
 ### Working ahead
 
-With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest the newest requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. Then the idle fleet keeps going and renders the rest of the planet, so the whole world eventually has tiles: `TileSweep` has one row per row of tiles (at each zoom), and a renderer claiming a row rechecks which of its tiles are rendered, so the first gap is what's left to do. The rows advance in parallel, and a tile rendered by a request is skipped on the next recheck. One renderer plans at a time, keeping `IDLE_QUEUE` idle jobs queued in `TileState` (a negative priority marks them); renderers take requested work first, and a request for a tile queued as idle work takes the tile. With it off, renderers leave jobs queued ahead alone.
+With `RENDER_IDLE_WORK` on, renderers with nothing to do work on what nobody has asked for yet: summaries, and tiles of cached zooms (an uncached zoom's tiles would only be rendered again when asked for). Only what can be done straight away is chosen, as for requests. The highest zooms come first, then those nearest the newest requested tile, within `IDLE_RADIUS` tiles (4) of the `IDLE_SEEDS` (200) most recently requested; work done ahead never counts as requested, so it doesn't lead further. Then the idle fleet keeps going and renders the rest of the planet, so the whole world eventually has tiles: `TileSweep` has one row per row of tiles (at each zoom), and a renderer claiming a row rechecks which of its tiles are rendered, so the first gap is what's left to do. The rows advance in parallel, and a tile rendered by a request is skipped on the next recheck. One renderer plans at a time, keeping `IDLE_QUEUE` idle jobs queued in `TileState` (flagged `idle`); renderers take requested work first, and a request for a tile queued as idle work takes the tile. With it off, renderers leave jobs queued ahead alone.
 
 ### Summaries
 

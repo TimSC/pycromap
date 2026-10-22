@@ -16,10 +16,8 @@ from django.utils._os import safe_join
 from django.views.decorators.http import require_GET
 
 from mapdata import changes
-from summaries import build as summaries
 
 from . import queue
-from .crop import crop
 from .models import TileRequest, TileState
 from .tilegeo import tile_area, valid_tile
 
@@ -147,25 +145,14 @@ async def _obtain(zoom, x, y, config, request_id):
 	return None, response
 
 
-def _tile_data(tile, cached):
-	"""A rendered tile's gzipped data (b"" if it is empty)."""
-	if cached:
-		if not tile.file:
-			return b""
-		with open(Path(settings.TILE_CACHE_DIR) / tile.file, "rb") as f:
-			return f.read()
-	return bytes(tile.data or b"")
-
-
 @require_GET
 async def tile(request, zoom, x, y):
 	"""A tile. Asynchronous, so that waiting for the renderer holds no thread,
 	and so that Django can cancel it when the client goes away, as a map does
 	with the tiles it no longer shows; under ASGI, that is.
 
-	Each request is kept as a TileRequest while it is answered, for the tile
-	it needs rendered (for a zoom cut from another, the tile it is cut from):
-	the queue's entry, if that must be rendered. It is deleted once the
+	Each request is kept as a TileRequest while it is answered: the queue's
+	entry, if its tile must be rendered. It is deleted once the
 	request is answered (whatever the answer), or flagged cancelled if the
 	client goes away first, not to be rendered for it, and deleted later
 	(queue.forget_requests)."""
@@ -173,13 +160,7 @@ async def tile(request, zoom, x, y):
 	if config is None or not valid_tile(zoom, x, y):
 		raise Http404("Zoom {} is not served".format(zoom))
 
-	if config["source"] == "crop":
-		scale = 1 << (zoom - config["from"])
-		needs = (config["from"], x // scale, y // scale)
-	else:
-		needs = (zoom, x, y)
-	tracked = await TileRequest.objects.acreate(zoom=needs[0], x=needs[1], y=needs[2],
-		dependencies=queue.dependencies(*needs))
+	tracked = await TileRequest.objects.acreate(zoom=zoom, x=x, y=y)
 	try:
 		response = await _answer(config, zoom, x, y, tracked.pk)
 	except asyncio.CancelledError:
@@ -196,27 +177,6 @@ async def tile(request, zoom, x, y):
 
 async def _answer(config, zoom, x, y, request_id):
 	"""The response to a request for a tile of a served zoom."""
-	if config["source"] == "crop":
-		# Cut from the tile covering it at a lower zoom, which is obtained as
-		# a request for that tile would be
-		parent_zoom = config["from"]
-		parent_config = queue.zoom_config(parent_zoom)
-		scale = 1 << (zoom - parent_zoom)
-		parent_x, parent_y = x // scale, y // scale
-		await sync_to_async(queue.log_request)(zoom, x, y)
-		parent, response = await _obtain(parent_zoom, parent_x, parent_y, parent_config, request_id)
-		if response is not None:
-			return response
-
-		def cut():
-			return crop(_tile_data(parent, parent_config.get("cache", False)), parent_zoom, parent_x, parent_y,
-				zoom, x, y)
-		# Decoding and cutting is CPU work: in a thread, off the event loop
-		data = await sync_to_async(cut, thread_sensitive=False)()
-		if not data:
-			return _no_store(HttpResponse(status=204))
-		return _no_store(_gzipped_tile(HttpResponse(data, content_type=MVT_CONTENT_TYPE)))
-
 	tile, response = await _obtain(zoom, x, y, config, request_id)
 	if response is not None:
 		return response

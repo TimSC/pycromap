@@ -171,14 +171,12 @@ TILEMAKER = {
 #   "source": "data" - rendered from the map data of the tile's area
 #             "summary" - rendered from the summaries beneath the tile at
 #             "level" (a summary level, no lower than the zoom), merged
-#             "crop" - cut from the tile covering it at zoom "from" (a lower
-#             zoom served), scaled up: quick, with that tile's content
 #   "summary": the zooms marked so form the summary pyramid: the finest is
 #              built from the map data (as its tiles render, or on its own);
 #              each coarser from the summaries of the next finer level
 #              beneath it, merged (see summaries/build.py)
 #   "cache": whether rendered tiles are kept and served as static files, or
-#            rendered afresh for every request (not for "crop", never kept)
+#            rendered afresh for every request
 #   "max_age": for a cached zoom, seconds after which a tile is rendered
 #              again when asked for (none: kept until it is gone)
 #   "check_edits": for a cached zoom made from the map data, whether a tile
@@ -186,12 +184,10 @@ TILEMAKER = {
 #              been edited since (see mapdata/changes.py); True unless set.
 #              Zooms made from summaries aren't checked: rendering them again
 #              would only use the same summaries.
-# Zooms without an entry are not served. The highest zoom rendered from the
-# data should have everything the zooms cut from it show: the profile gives
-# z12 the content of upstream's z14 (see profile/process.lua).
+# Zooms without an entry are not served. Above the highest, the map viewer
+# scales its tiles up (VIEWER_MAX_ZOOM): the profile gives z12 the content of
+# upstream's z14 (see profile/process.lua).
 TILE_ZOOMS = {
-	#14: {"source": "crop", "from": 12},
-	#13: {"source": "crop", "from": 12},
 	12: {"source": "data", "cache": True, "summary": True},
 	11: {"source": "summary", "level": 12, "cache": True},
 	10: {"source": "summary", "level": 12, "cache": True, "summary": True},

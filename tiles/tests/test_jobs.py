@@ -83,7 +83,7 @@ class JobTests(TestCase):
 		self.assertFalse(TileState.objects.filter(kind=TileState.SUMMARY).exists())
 
 	def test_idle_work_builds_nothing_it_needs(self):
-		TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.QUEUED, priority=-1)
+		TileState.objects.create(kind=TileState.TILE, zoom=11, x=3, y=4, status=TileState.QUEUED, idle=True, priority=-1)
 		with mock.patch(READ) as read, mock.patch(RENDER):
 			with override_settings(RENDER_IDLE_WORK=True):
 				render_one("w")
@@ -145,7 +145,7 @@ class JobTests(TestCase):
 
 	def test_a_summary_job_needing_finer_summaries_fails_without_queueing_them(self):
 		# As the idle renderers queue them
-		TileState.objects.create(kind=TileState.SUMMARY, zoom=10, x=0, y=0, status=TileState.QUEUED, priority=-1)
+		TileState.objects.create(kind=TileState.SUMMARY, zoom=10, x=0, y=0, status=TileState.QUEUED, idle=True, priority=-1)
 		with mock.patch(RENDER):
 			render_one("w")
 		job = TileState.objects.get(kind=TileState.SUMMARY)
@@ -156,7 +156,7 @@ class JobTests(TestCase):
 	def test_a_summary_job_from_finer_summaries(self):
 		for level, x, y in build.tiles_beneath(10, 0, 0, 12):
 			build.store(level, x, y, town(), 5)
-		TileState.objects.create(kind=TileState.SUMMARY, zoom=10, x=0, y=0, status=TileState.QUEUED, priority=-1)
+		TileState.objects.create(kind=TileState.SUMMARY, zoom=10, x=0, y=0, status=TileState.QUEUED, idle=True, priority=-1)
 		render_one("w")
 		self.assertEqual(TileState.objects.get().status, TileState.DONE)
 		self.assertEqual(build.missing([(10, 0, 0)]), [])

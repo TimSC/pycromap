@@ -7,7 +7,7 @@ uvicorn==0.32.0
 # Summaries: running summary.lua, and simplifying geometry
 lupa==2.8
 shapely==2.2.0
-# Cutting tiles from a lower zoom's
+# Reading rendered tiles, to name common ones (tiles/common.py)
 mapbox-vector-tile==2.2.0
 # Reading the pycrocosm map database
 psycopg2-binary==2.9.13

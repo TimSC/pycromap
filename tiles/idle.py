@@ -32,7 +32,8 @@ from summaries.models import TileSummary
 
 from .models import TileState, TileSweep
 
-# Idle jobs come after every request (whose priority is the time it came)
+# The priority of the first idle job planned; the rest come after it, in the
+# order planned (TileState.idle marks them as idle work)
 IDLE_PRIORITY = -1.0
 
 
@@ -301,7 +302,7 @@ def reclaim_sweeps():
 
 def idle_queued():
 	"""How many idle jobs are queued and ready to be claimed."""
-	return TileState.objects.filter(status=TileState.QUEUED, priority__lt=0).count()
+	return TileState.objects.filter(status=TileState.QUEUED, idle=True).count()
 
 
 @contextmanager
@@ -354,8 +355,7 @@ def queue_idle_work(worker):
 					defaults={"status": TileState.DONE})
 				if job.status in (TileState.QUEUED, TileState.RENDERING, TileState.FAILED):
 					continue
-				# The negative priority marks it as idle work
-				TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED,
+				TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED, idle=True,
 					priority=IDLE_PRIORITY - rank, queued_at=now, attempts=0, error="")
 				made += 1
 		return made

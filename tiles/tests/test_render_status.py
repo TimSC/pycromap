@@ -12,7 +12,7 @@ class RenderStatusTests(TestCase):
 		TileState.objects.create(kind=TileState.TILE, zoom=12, x=1, y=2, status=TileState.RENDERING,
 			claimed_by="host:1:0", claimed_at=timezone.now())
 		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=3, y=4, status=TileState.QUEUED,
-			priority=-1.0, queued_at=timezone.now())
+			idle=True, priority=-1, queued_at=timezone.now())
 		TileRequest.objects.create(zoom=12, x=7, y=8, status=TileRequest.WAITING, attempts=1)
 		TileState.objects.create(kind=TileState.TILE, zoom=10, x=5, y=6, status=TileState.FAILED,
 			attempts=3, error="boom", requested_at=timezone.now())

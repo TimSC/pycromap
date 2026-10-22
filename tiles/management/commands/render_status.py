@@ -73,7 +73,7 @@ class Command(BaseCommand):
 				queue.span(request.started_at), tries))
 
 		# Idle work, in the order it will be taken
-		ready = TileState.objects.filter(status=TileState.QUEUED, priority__lt=0)
+		ready = TileState.objects.filter(status=TileState.QUEUED, idle=True)
 		self.stdout.write("")
 		self.stdout.write("idle work queued: {}".format(ready.count()))
 		for job in ready.order_by("-priority", "queued_at")[:lines]:

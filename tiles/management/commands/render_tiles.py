@@ -25,13 +25,9 @@ from django.db import close_old_connections, connections
 from summaries import build as summaries
 from tiles import idle, queue
 from tiles.models import TileState
-from tiles.render import read_tile_data, render_data
+from tiles.render import RenderError, read_tile_data, render_data
 
 logger = logging.getLogger("tiles")
-
-
-class RenderError(Exception):
-	pass
 
 
 class FinalError(RenderError):
@@ -126,7 +122,7 @@ def render_tile_job(job, worker=""):
 
 	# From summaries: those beneath it at the configured level, merged
 	needed = summaries.tiles_beneath(job.zoom, job.x, job.y, config["level"])
-	if job.priority >= 0 and job.zoom >= settings.CASCADE_MIN_ZOOM:
+	if not job.idle and job.zoom >= settings.CASCADE_MIN_ZOOM:
 		build_dependencies(job, needed, worker)
 	missing = summaries.missing(needed)
 	if missing:

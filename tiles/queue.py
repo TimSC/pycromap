@@ -19,8 +19,6 @@ from django.db import transaction
 from django.db.models import Exists, F, OuterRef
 from django.utils import timezone
 
-from summaries import build as summaries
-
 from .models import TileRequest, TileState
 from .common import COMMON_DIR, common_file
 
@@ -58,22 +56,6 @@ def _write(path, data):
 	with open(temporary, "wb") as f:
 		f.write(data)
 	os.replace(temporary, full)
-
-
-def dependencies(zoom, x, y):
-	"""What a tile is made from directly, built or not, as [kind, zoom, x, y]:
-	nothing for a tile from the map data (the summary its rendering builds is
-	made from it, not the other way round); the summaries beneath it at its
-	zoom's level (TILE_ZOOMS) for a tile from summaries; and for a tile cut
-	from another zoom's, the tile it is cut from."""
-	config = zoom_config(zoom) or {}
-	if config.get("source") == "summary":
-		return [[TileState.SUMMARY, level, sx, sy] for level, sx, sy in
-			summaries.tiles_beneath(zoom, x, y, config["level"])]
-	if config.get("source") == "crop":
-		scale = 1 << (zoom - config["from"])
-		return [[TileState.TILE, config["from"], x // scale, y // scale]]
-	return []
 
 
 def log_request(zoom, x, y):
@@ -149,7 +131,7 @@ def _claim_requested(worker):
 				**candidate).values_list("attempts", flat=True), default=0)
 			taken = TileState.objects.filter(pk=tile.pk).exclude(status=TileState.RENDERING).update(
 				status=TileState.RENDERING, claimed_by=worker, claimed_at=now, attempts=attempts,
-				priority=time.time(), queued_at=now, error="")
+				idle=False, priority=time.time(), queued_at=now, error="")
 			if not taken:
 				# Being rendered from the idle queue meanwhile: these requests
 				# wait for that rendering
@@ -180,8 +162,8 @@ def claim_dependency(level, x, y, worker, priority):
 			defaults={"status": TileState.DONE})
 		now = timezone.now()
 		taken = TileState.objects.filter(pk=job.pk).exclude(status=TileState.RENDERING).update(
-			status=TileState.RENDERING, claimed_by=worker, claimed_at=now, priority=priority, queued_at=now,
-			attempts=1, error="")
+			status=TileState.RENDERING, claimed_by=worker, claimed_at=now, idle=False, priority=priority,
+			queued_at=now, attempts=1, error="")
 	return TileState.objects.get(pk=job.pk) if taken else None
 
 
@@ -224,7 +206,7 @@ def requeue_abandoned():
 	TileRequest.objects.filter(status=TileRequest.CLAIMED, claimed_at__lt=cutoff).update(
 		status=TileRequest.WAITING, claimed_by="", claimed_at=None)
 	abandoned = TileState.objects.filter(status=TileState.RENDERING, claimed_at__lt=cutoff)
-	return (abandoned.filter(priority__lt=0).update(status=TileState.QUEUED, claimed_by="", claimed_at=None) +
+	return (abandoned.filter(idle=True).update(status=TileState.QUEUED, claimed_by="", claimed_at=None) +
 		abandoned.update(status=TileState.FAILED, claimed_by="", claimed_at=None, error="abandoned by its renderer"))
 
 
@@ -236,7 +218,7 @@ def claim_next(worker, idle=True):
 	if job is not None or not idle:
 		return job
 	while True:
-		jobs = TileState.objects.filter(status=TileState.QUEUED, priority__lt=0)
+		jobs = TileState.objects.filter(status=TileState.QUEUED, idle=True)
 		candidate = jobs.order_by("-priority", "queued_at").values_list("pk", flat=True).first()
 		if candidate is None:
 			return None
@@ -284,7 +266,7 @@ def fail(tile, error, final=False):
 	that, the requests for the tile are answered as failed."""
 	tile.refresh_from_db()
 	given_up = final or tile.attempts >= settings.RENDER_ATTEMPTS
-	retry_idle = tile.priority < 0 and not given_up
+	retry_idle = tile.idle and not given_up
 	TileState.objects.filter(pk=tile.pk).update(status=TileState.QUEUED if retry_idle else TileState.FAILED,
 		error=str(error)[:2000], claimed_by="", claimed_at=None)
 	if given_up:
