@@ -52,15 +52,25 @@ AREA_BOUNDARIES = frozenset(("national_park", "protected_area"))
 # Others are labelled from nodes, so a country's boundary tagged
 # place=country (as Canada's is) is still nothing but a boundary.
 AREA_PLACES = frozenset(("island",))
+# Areas the profile doesn't draw, for now: a multipolygon that is nothing but
+# one of these is not read whole either. Glaciers: the Greenland ice sheet
+# alone is 55,000 nodes, read for every tile its box reaches, mostly to draw
+# nothing.
+NOT_DRAWN = frozenset((("natural", "glacier"),))
 
 
 def needs_whole(tags):
 	"""Whether a multipolygon must be read whole, every member way, to be
-	drawn: unless it is nothing but a boundary (see AREA_KEYS)."""
+	drawn: unless it is nothing but a boundary (see AREA_KEYS), or an area
+	not drawn (NOT_DRAWN)."""
 	boundary = tags.get("boundary")
-	if boundary is None or boundary in AREA_BOUNDARIES:
+	if boundary in AREA_BOUNDARIES:
 		return True
-	return tags.get("place") in AREA_PLACES or any(key in AREA_KEYS for key in tags)
+	if tags.get("place") in AREA_PLACES or any(key in AREA_KEYS and (key, value) not in NOT_DRAWN
+			for key, value in tags.items()):
+		return True
+	# Untagged but for its type: perhaps drawn from tags on its ways
+	return boundary is None and not any(tag in NOT_DRAWN for tag in tags.items())
 
 
 class MapDataError(Exception):

@@ -46,6 +46,12 @@ class NeedsWholeTests(SimpleTestCase):
 				{"boundary": "administrative", "admin_level": "2", "place": "country", "name": "Canada"}):
 			self.assertFalse(needs_whole(tags), tags)
 
+	def test_areas_not_drawn_are_not(self):
+		self.assertFalse(needs_whole({"type": "multipolygon", "natural": "glacier", "name": "Indlandsis"}))
+		# Unless drawn for another tag
+		self.assertTrue(needs_whole({"natural": "glacier", "place": "island"}))
+		self.assertTrue(needs_whole({"natural": "glacier", "landuse": "forest"}))
+
 
 class ChangedSinceSqlTests(SimpleTestCase):
 	def test_both_layers(self):

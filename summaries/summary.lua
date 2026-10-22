@@ -43,7 +43,7 @@ local landuse = set { "residential", "commercial", "industrial", "retail", "rail
 	"cemetery", "military", "quarry", "forest", "farmland", "meadow", "grass",
 	"orchard", "vineyard", "allotments", "recreation_ground", "village_green" }
 local natural = set { "water", "wood", "scrub", "grassland", "heath", "wetland",
-	"beach", "sand", "bare_rock", "scree", "glacier", "coastline", "bay" }
+	"beach", "sand", "bare_rock", "scree", "coastline", "bay" }
 local leisure = set { "park", "nature_reserve", "golf_course", "garden" }
 local waterways = { [12] = set { "river", "canal" }, [10] = set { "river", "canal" },
 	[8] = set { "river" }, [6] = set { "river" } }

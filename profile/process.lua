@@ -271,7 +271,7 @@ landcoverKeys   = { wood="wood", forest="wood",
                     wetland="wetland",
                     beach="sand", sand="sand", dune="sand",
                     farmland="farmland", farm="farmland", orchard="farmland", vineyard="farmland", plant_nursery="farmland",
-                    glacier="ice", ice_shelf="ice",
+                    ice_shelf="ice",
                     bare_rock="rock", scree="rock",
                     fell="grass", flowerbed="grass", grassland="grass", heath="grass", scrub="grass", shrubbery="grass", tundra="grass", grass="grass", meadow="grass", allotments="grass", park="grass", village_green="grass", recreation_ground="grass", garden="grass", golf_course="grass" }
 
@@ -808,9 +808,7 @@ end
 
 -- Remap coastlines
 function attribute_function(attr,layer)
-	if attr["featurecla"]=="Glaciated areas" then
-		return { subclass="glacier" }
-	elseif attr["featurecla"]=="Antarctic Ice Shelf" then
+	if attr["featurecla"]=="Antarctic Ice Shelf" then
 		return { subclass="ice_shelf" }
 	elseif attr["featurecla"]=="Urban area" then
 		return { class="residential" }
