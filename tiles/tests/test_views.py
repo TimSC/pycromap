@@ -21,7 +21,7 @@ class TileViewTests(TransactionTestCase):
 			TILE_REQUEST_WAIT=5, EDIT_CHECK_INTERVAL=0)
 		self.settings.enable()
 		# Whether the map has been edited: it hasn't, unless a test says so
-		self.edited = mock.patch("tiles.views.changes.changed_since", return_value=False)
+		self.edited = mock.patch("tiles.views.source.changed_since", return_value=False)
 		self.changed_since = self.edited.start()
 		# The tiles requests asked to have rendered (queue.wait_for_render)
 		from tiles import queue

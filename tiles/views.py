@@ -7,7 +7,6 @@ from pathlib import Path
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.contrib.staticfiles import finders
-from django.db import DatabaseError
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect, JsonResponse
 from django.shortcuts import render
 from django.templatetags.static import static
@@ -15,7 +14,7 @@ from django.utils import timezone
 from django.utils._os import safe_join
 from django.views.decorators.http import require_GET
 
-from mapdata import changes
+from mapdata import source
 
 from . import queue
 from .models import TileRequest, TileState
@@ -67,17 +66,17 @@ def _respond(tile, cached):
 
 def _edited_since(tile):
 	"""Whether the map in a tile's area has been edited since the newest edit
-	of what it was made from (see mapdata.changes). The map database is asked
-	at most once every EDIT_CHECK_INTERVAL seconds for a tile, counting from
-	when it was rendered or last found unedited; in between, it is taken to
-	be as it was, as it is if the map database can't say."""
+	of what it was made from (see mapdata.source). The map is asked at most
+	once every EDIT_CHECK_INTERVAL seconds for a tile, counting from when it
+	was rendered or last found unedited; in between, it is taken to be as it
+	was, as it is if the map can't say."""
 	now = timezone.now()
 	last = max(t for t in (tile.rendered_at, tile.edits_checked_at) if t is not None)
 	if (now - last).total_seconds() < settings.EDIT_CHECK_INTERVAL:
 		return False
 	try:
-		edited = changes.changed_since(tile.data_version or 0, *tile_area(tile.zoom, tile.x, tile.y))
-	except DatabaseError as e:
+		edited = source.changed_since(tile.data_version or 0, *tile_area(tile.zoom, tile.x, tile.y))
+	except source.UNAVAILABLE as e:
 		logger.warning("Couldn't tell whether %d/%d/%d has been edited: %s", tile.zoom, tile.x, tile.y, e)
 		return False
 	if not edited:

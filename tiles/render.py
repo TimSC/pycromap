@@ -9,7 +9,7 @@ import tempfile
 import pyo5m
 from django.conf import settings
 
-from mapdata.reader import read_area
+from mapdata.source import read_area
 
 from .tilegeo import tile_area
 

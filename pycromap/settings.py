@@ -8,6 +8,8 @@ environment, or from a .env file beside manage.py (see .env.example).
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -153,7 +155,19 @@ STATIC_ROOT = BASE_DIR / "staticfiles"
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# ---- The pycrocosm map database (DATABASES["pycrocosm"])
+# ---- The pycrocosm map
+
+# Where the map data is read from: "database", the pycrocosm map database
+# itself (DATABASES["pycrocosm"]), or "api", pycrocosm's web API at
+# PYCROCOSM_API_URL (Overpass and replication: see mapdata/api.py), for a
+# pycromap that can't reach the database. The database is quicker, and
+# dates each tile by the newest edit of what is in it, not of the whole map
+MAP_SOURCE = env("MAP_SOURCE", "database")
+if MAP_SOURCE not in ("database", "api"):
+	raise ImproperlyConfigured('MAP_SOURCE must be "database" or "api", not {!r}'.format(MAP_SOURCE))
+PYCROCOSM_API_URL = env("PYCROCOSM_API_URL", "http://localhost:8000/")
+
+# The pycrocosm map database (DATABASES["pycrocosm"]), for MAP_SOURCE "database":
 
 # The static layer of tables (the imported planet, pgmap's dbtableprefix) and
 # the modify layer of edits over it (dbtablemodifyprefix)

@@ -6,7 +6,7 @@ A map tile server for a [pycrocosm](https://github.com/TimSC/pycrocosm) map data
 
 1. The map asks for a tile, `/tiles/{z}/{x}/{y}.pbf`. The request is kept as a `TileRequest` row while it is answered, and logged in the tile's `TileState` row (how often, and when: the idle renderers work near the tiles asked for).
 2. A cached tile with a current file is answered with a redirect to that file, and its request is flagged `cache_redirect`: there is nothing to render for it, and no renderer claims it. Otherwise the request is the queue's entry for the tile: it waits (up to `TILE_REQUEST_WAIT` seconds) for a renderer.
-3. A renderer, `manage.py render_tiles`, claims the newest waiting request, with every other waiting for the same tile, and adds the tile to `TileState` as rendering. It reads the map data of the tile's area from the pycrocosm database (`mapdata/`), writes it as o5m (or PBF), and runs tilemaker-core with `--tile`. A request for a tile already being rendered waits for that rendering. If the client goes away first, its request is flagged cancelled, and no renderer claims it.
+3. A renderer, `manage.py render_tiles`, claims the newest waiting request, with every other waiting for the same tile, and adds the tile to `TileState` as rendering. It reads the map data of the tile's area from the pycrocosm database, or through pycrocosm's web API (`mapdata/`, see below), writes it as o5m (or PBF), and runs tilemaker-core with `--tile`. A request for a tile already being rendered waits for that rendering. If the client goes away first, its request is flagged cancelled, and no renderer claims it.
 4. The tile is written to `TILE_CACHE_DIR`, named with the version of the map data it came from, and every request waiting for it is answered: a redirect to the file for a cached zoom, the tile itself otherwise, or 204 if there was nothing to draw. The request's row is then deleted (a cancelled one is kept `CANCELLED_REQUEST_KEEP` seconds).
 
 `TILE_ZOOMS` in the settings says how each zoom is made:
@@ -36,12 +36,14 @@ Summaries are stored in pycromap's database (`TileSummary`), with the version of
 
 A tile is rendered on demand at or above `CASCADE_MIN_ZOOM` (8). The renderer that claims a request for one made from summaries is responsible for it and for every summary it needs that is missing, all the way down: the summaries it is made from, those they are built from, and so on, to the base level, built from the map data. Again and again it takes, of those missing and not underway, one at the highest zoom whose own summaries are all there, adds it to `TileState` as a job, claims it and builds it; then it renders the tile. Summaries other renderers are building, it waits for. It keeps its claims fresh as it goes, so a long cascade isn't taken for abandoned, and stops if no request wants the tile any more (what it has built is kept), or fails the tile if a summary it needs can't be built. A cascade can be long: each zoom between summary levels multiplies it by 16, so a z8 tile nobody has looked near can need 256 base summaries, each a read of a z12 tile's map data. Below `CASCADE_MIN_ZOOM`, a request is answered from the cache, or with a placeholder (an empty tile, 204, with `X-Tile-Status: placeholder`, not to be cached): those zooms are rendered by the idle renderers, which build the pyramid from the bottom.
 
+The map data is read from the pycrocosm map database directly, or, with `MAP_SOURCE=api`, through pycrocosm's web API at `PYCROCOSM_API_URL`, for a pycromap that can't reach the database. Through the API, an area is read with pycrocosm's Overpass (`api/interpreter`), which finds ways and relations by their stored bounding boxes as the database reader does, then the other member ways of multipolygons drawn whole and relations' node members; edits are checked with `replication/changed`. It reads the same objects and renders the same tiles, several times slower, and dates each tile by the map's latest edit as it was read rather than by the newest edit of what is in it.
+
 The map database is read the way pgmap reads it: in one repeatable-read, read-only transaction, with pgmap's tables locked first (static layer, then modify layer, each in pgmap's order) so that everything read is from one moment. The static and modify layers are merged as pgmap's views do.
 
 ## Layout
 
 - `pycromap/` - the Django project: settings and URLs
-- `mapdata/` - reading the pycrocosm map database (`DATABASES["pycrocosm"]`, only ever read)
+- `mapdata/` - reading the pycrocosm map: its database (`DATABASES["pycrocosm"]`, only ever read), or its web API (`api.py`), as `MAP_SOURCE` says (`source.py`)
 - `tiles/` - tile state and the render queue, rendering, the tile and map page views, and the `render_tiles` command
 - `summaries/` - tile summaries: building, merging, and `summary.lua`
 - `profile/` - the tilemaker profile tiles are rendered with
