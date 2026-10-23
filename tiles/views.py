@@ -15,6 +15,7 @@ from django.utils._os import safe_join
 from django.views.decorators.http import require_GET
 
 from mapdata import source
+from summaries import build as summaries
 
 from . import queue
 from .models import TileRequest, TileState
@@ -40,10 +41,30 @@ def _placeholder():
 
 
 def _can_render(zoom, x, y, config):
-	"""Whether a tile is rendered on demand: at or above CASCADE_MIN_ZOOM, as
-	the renderer that claims it builds whatever summaries it needs that are
-	missing. Below it, it is left to the idle renderers."""
-	return zoom >= settings.CASCADE_MIN_ZOOM
+	"""Whether a tile is rendered on demand. At or above CASCADE_MIN_ZOOM,
+	always, as the renderer that claims it builds whatever summaries it needs
+	that are missing, all the way down. Below it, only if each summary it is
+	made from is built, or can be built straight away (what that is made from
+	is all built, or it is built from the map data): the renderer then builds
+	those missing, one level, not what they are made from, after the requests
+	at or above it (see queue._claim_requested). One that can't gets a
+	placeholder at once, rather than wait in the queue for summaries that may
+	be long in coming, so the renderers never look at it."""
+	if zoom >= settings.CASCADE_MIN_ZOOM or config["source"] != "summary":
+		return True
+	# Two queries: the summaries it is made from, and those beneath them
+	level = config["level"]
+	scale = 1 << (level - zoom)
+	x0, y0 = x * scale, y * scale
+	built = summaries.built_in(level, x0, x0 + scale - 1, y0, y0 + scale - 1)
+	missing = [(sx, sy) for sx in range(x0, x0 + scale) for sy in range(y0, y0 + scale) if (sx, sy) not in built]
+	finer = summaries.finer_level(level)
+	if not missing or finer is None:
+		return True
+	f = 1 << (finer - level)
+	beneath = summaries.built_in(finer, x0 * f, (x0 + scale) * f - 1, y0 * f, (y0 + scale) * f - 1)
+	return all((fx, fy) in beneath for sx, sy in missing
+		for fx in range(sx * f, (sx + 1) * f) for fy in range(sy * f, (sy + 1) * f))
 
 
 def _gzipped_tile(response):

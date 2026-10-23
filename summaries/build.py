@@ -348,6 +348,15 @@ def load(level, x, y):
 	return decode(summary.data, summary.format), summary.version
 
 
+def built_in(level, x0, x1, y0, y1):
+	"""The current summaries at a level within a range of tiles (x0 to x1, y0
+	to y1, inclusive), as {(x, y)}: one query, asking for each column, so the
+	index (zoom, x, y, ...) finds each column's few rather than every summary
+	of the level."""
+	return set(current(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
+		y__range=(y0, y1))).values_list("x", "y"))
+
+
 def missing(tiles):
 	"""Those of the summaries (level, x, y) that aren't stored, or are out of
 	date."""

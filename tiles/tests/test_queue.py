@@ -168,6 +168,13 @@ class QueueTests(TestCase):
 			(TileState.FAILED, TileRequest.WAITING, ""))
 		self.assertEqual(idle.status, TileState.QUEUED)
 
+	@override_settings(CASCADE_MIN_ZOOM=8)
+	def test_requests_below_cascade_min_zoom_come_after_the_rest(self):
+		older, newer = want(1, 2, 8), want(1, 2, 6)
+		TileRequest.objects.filter(pk=older.pk).update(started_at=timezone.now() - timedelta(seconds=10))
+		self.assertEqual(queue.claim_next("a").zoom, 8)
+		self.assertEqual(queue.claim_next("b").zoom, 6)
+
 	def test_a_heartbeat_keeps_only_its_renderers_claims(self):
 		want(1, 2, 13); want(2, 2, 13)
 		queue.claim_next("a"); queue.claim_next("b")

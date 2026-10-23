@@ -5,9 +5,11 @@ The process claims jobs one at a time: a tile from map data (reading it,
 building its summary if the zoom marks one, and running tilemaker-core), a
 tile from summaries, or a summary from finer summaries. A renderer that
 claims a requested tile at or above CASCADE_MIN_ZOOM builds the summaries it
-needs that are missing first (build_dependencies); below it, a request gets
-the cache or a placeholder (tiles.views), and the idle renderers build the
-pyramid from the bottom. The work is CPU-bound Python, and threads
+needs that are missing first (build_dependencies). Below it, a request is
+only queued if the summaries its tile is made from can be built straight
+away (tiles.views), and, after those at or above it, the renderer builds
+those missing (one level, not what they are made from) and renders it; the
+idle renderers build the pyramid from the bottom. The work is CPU-bound Python, and threads
 in one process share the interpreter's lock, so one process renders one job
 at a time: run `RENDER_WORKERS` (8) of them to render more.
 """
@@ -66,10 +68,12 @@ def missing_tree(needed):
 	return tree
 
 
-def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
+def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None, cascade=True):
 	"""Builds every summary missing under those a claimed tile is made from
 	(needed), so it can be rendered: the claiming renderer is responsible for
-	them all (CASCADE_MIN_ZOOM). Again and again, of those missing and not
+	them all (CASCADE_MIN_ZOOM). Without cascade, only those missing of the
+	summaries needed themselves, one level, not what they are made from: one
+	whose own summaries are missing fails, and so the tile. Again and again, of those missing and not
 	underway, it takes one at the highest zoom (the finest, so what it is
 	built from is there), adds it to TileState as a job, claims it, and builds
 	it. Those other renderers are building, it waits for. It stops
@@ -78,7 +82,7 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 	the renderer is stopping (stop is set), between summaries, keeping those
 	built."""
 	while True:
-		tree = missing_tree(needed)
+		tree = missing_tree(needed) if cascade else summaries.missing(needed)
 		if not tree:
 			return
 		if stop is not None and stop.is_set():
@@ -114,8 +118,9 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None):
 
 def render_tile_job(job, worker="", stop=None):
 	"""Renders a tile. Returns the tile and its data version. For a tile
-	claimed for requests at or above CASCADE_MIN_ZOOM, made from summaries,
-	the summaries it needs are built first (build_dependencies)."""
+	claimed for requests, made from summaries, the summaries it needs are
+	built first (build_dependencies): at or above CASCADE_MIN_ZOOM, all the
+	way down; below it, only those it is made from (one level)."""
 	config = queue.zoom_config(job.zoom)
 	if config is None:
 		raise RenderError("zoom {} is not served".format(job.zoom))
@@ -130,8 +135,8 @@ def render_tile_job(job, worker="", stop=None):
 
 	# From summaries: those beneath it at the configured level, merged
 	needed = summaries.tiles_beneath(job.zoom, job.x, job.y, config["level"])
-	if not job.idle and job.zoom >= settings.CASCADE_MIN_ZOOM:
-		build_dependencies(job, needed, worker, stop=stop)
+	if not job.idle:
+		build_dependencies(job, needed, worker, stop=stop, cascade=job.zoom >= settings.CASCADE_MIN_ZOOM)
 	missing = summaries.missing(needed)
 	if missing:
 		raise FinalError("summaries it is made from aren't built: " + _tiles(missing))

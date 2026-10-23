@@ -16,7 +16,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Exists, F, OuterRef
+from django.db.models import Case, Exists, F, OuterRef, When
 from django.utils import timezone
 
 from .models import TileRequest, TileState, TileSweep
@@ -105,7 +105,10 @@ def _answer_requests(tile, status):
 
 def _claim_requested(worker):
 	"""Claims the newest request waiting, and every other request waiting for
-	the same tile, for a renderer; adds the tile to TileState, as rendering
+	the same tile, for a renderer: the newest at or above CASCADE_MIN_ZOOM,
+	then, when there are none, the newest below it (queued only when what
+	they are made from can be built straight away: see
+	tiles.views._can_render); adds the tile to TileState, as rendering
 	by it; and returns its TileState. None if no request is waiting, but for
 	a tile that is being rendered already (those requests are answered when
 	that rendering is). A cancelled request isn't claimed, nor one being
@@ -114,7 +117,9 @@ def _claim_requested(worker):
 		zoom=OuterRef("zoom"), x=OuterRef("x"), y=OuterRef("y"))
 	while True:
 		candidate = (TileRequest.objects.filter(status=TileRequest.WAITING, cancelled=False, cache_redirect=False)
-			.exclude(Exists(rendering)).order_by("-started_at").values("zoom", "x", "y").first())
+			.exclude(Exists(rendering))
+			.order_by(Case(When(zoom__gte=settings.CASCADE_MIN_ZOOM, then=0), default=1), "-started_at")
+			.values("zoom", "x", "y").first())
 		if candidate is None:
 			return None
 		now = timezone.now()
