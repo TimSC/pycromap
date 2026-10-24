@@ -181,6 +181,17 @@ class MergeObjectsTests(TestCase):
 		by_id = {w.id: w for w in out.ways}
 		self.assertEqual(by_id[103].refs, [2, 7])  # kept as-is
 
+	def test_chains_grow_at_the_start_without_jumps(self):
+		# The chain starts from way 10 (2-3), then grows before its start:
+		# way 11 starts at 2 and must be reversed, way 12 ends at 1 and must
+		# not be. Every step of the chain is a step of one of the ways.
+		tags = {"highway": "primary"}
+		data = osm(nodes=[pyo5m.Node(i, 0.1 + i * 0.01, 0.1) for i in range(5)],
+			ways=[pyo5m.Way(10, [2, 3], tags), pyo5m.Way(11, [2, 1], tags), pyo5m.Way(12, [0, 1], tags),
+				pyo5m.Way(13, [3, 4], tags)])
+		out = build.merge_objects(data, 1, 1, 0)
+		self.assertEqual([w.refs for w in out.ways], [[0, 1, 2, 3, 4]])
+
 	def test_closed_ways_are_not_concatenated(self):
 		out = build.merge_objects(self._data(), 1, 0, 0)
 		by_id = {w.id: w for w in out.ways}

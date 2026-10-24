@@ -280,10 +280,11 @@ def _concatenate_ways(ways):
 							else:
 								continue
 						elif node == refs[0]:
-							if other[0] == node:
-								refs = other[1:] + refs
-							elif other[-1] == node:
-								refs = list(reversed(other[:-1])) + refs
+							# Added before the start, so as to end at it
+							if other[-1] == node:
+								refs = list(other[:-1]) + refs
+							elif other[0] == node:
+								refs = list(reversed(other[1:])) + refs
 							else:
 								continue
 						used[i] = True
