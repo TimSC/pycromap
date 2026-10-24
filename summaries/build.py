@@ -117,12 +117,18 @@ def tolerance(level):
 
 def simplify_refs(refs, coords, tol):
 	"""A way's node IDs, fewer: those of the vertices that simplifying its line
-	keeps. Nodes without a location are left out."""
+	keeps. Nodes without a location are left out. A closed way (a ring of an
+	area) is simplified without crossing itself: simplified as a plain line,
+	a ring can fold over itself, and an area whose ring does is drawn wrongly,
+	or not at all (most of a forest's outer ring, say, at a coarser level).
+	Summaries built before this share their recipe with those built since:
+	see PENDING.md."""
 	refs = [ref for ref in refs if ref in coords]
 	if len(refs) < 3 or tol <= 0:
 		return refs
 	points = [coords[ref] for ref in refs]
-	kept = LineString(points).simplify(tol, preserve_topology=False).coords
+	closed = len(refs) > 3 and refs[0] == refs[-1]
+	kept = LineString(points).simplify(tol, preserve_topology=closed).coords
 	# Simplifying keeps vertices as they were, so they can be matched back to
 	# their nodes, in order
 	out, i = [], 0

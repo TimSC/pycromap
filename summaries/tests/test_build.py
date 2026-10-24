@@ -2,6 +2,7 @@ import tempfile
 from pathlib import Path
 
 import pyo5m
+from shapely.geometry import LineString, Polygon
 from django.conf import settings
 from django.test import TestCase, override_settings
 
@@ -55,6 +56,20 @@ class SimplifyTests(TestCase):
 	def test_corners_are_kept(self):
 		coords = {1: (0, 0), 2: (0.5, 0.0), 3: (1, 0), 4: (1, 1)}
 		self.assertEqual(build.simplify_refs([1, 2, 3, 4], coords, 0.0001), [1, 3, 4])
+
+	def test_ring_stays_valid(self):
+		# A square whose bottom edge dips, with a narrow notch from the top
+		# reaching into the dip: simplified as a plain line, the dip goes and
+		# the notch's tip pokes through the bottom edge
+		points = [(0, 0), (4, 0), (5, -0.4), (6, 0), (10, 0), (10, 10), (5.2, 10), (5.05, -0.2),
+			(4.95, -0.2), (4.8, 10), (0, 10), (0, 0)]
+		coords = {i: p for i, p in enumerate(points[:-1])}
+		refs = list(range(len(points) - 1)) + [0]
+		self.assertTrue(Polygon(points).is_valid)
+		self.assertFalse(Polygon(LineString(points).simplify(0.5, preserve_topology=False).coords).is_valid)
+		kept = build.simplify_refs(refs, coords, 0.5)
+		self.assertEqual((kept[0], kept[-1]), (0, 0))
+		self.assertTrue(Polygon([coords[r] for r in kept]).is_valid)
 
 	def test_ring_stays_closed(self):
 		coords = {1: (0, 0), 2: (1, 0), 3: (1, 1), 4: (0, 1)}
