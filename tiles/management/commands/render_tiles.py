@@ -27,7 +27,7 @@ from django.db import DatabaseError, close_old_connections, connections
 
 from summaries import build as summaries
 from tiles import idle, queue
-from tiles.models import TileState
+from tiles.models import Job
 from tiles.render import RenderError, read_tile_data, render_data
 
 logger = logging.getLogger("tiles")
@@ -75,7 +75,7 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None, cas
 	summaries needed themselves, one level, not what they are made from: one
 	whose own summaries are missing fails, and so the tile. Again and again, of those missing and not
 	underway, it takes one at the highest zoom (the finest, so what it is
-	built from is there), adds it to TileState as a job, claims it, and builds
+	built from is there), adds a job for it, claims it, and builds
 	it. Those other renderers are building, it waits for. It stops
 	(FinalError) if no request wants
 	the tile any more, or a summary it needs can't be built; or (Stopped) if
@@ -111,7 +111,7 @@ def build_dependencies(job, needed, worker, wait=DEPENDENCY_POLL, stop=None, cas
 		except Exception as e:
 			queue.fail(dependency, e, final=True)
 			raise FinalError("summary {}/{}/{} it needs failed: {}".format(level, x, y, e))
-		queue.finish_summary(dependency, version, time.monotonic() - started)
+		queue.finish_summary(dependency)
 		logger.info("Built summary %d/%d/%d for %s %d/%d/%d: version %s, %.2fs", level, x, y, job.kind, job.zoom,
 			job.x, job.y, version, time.monotonic() - started)
 
@@ -167,9 +167,9 @@ def render_one(process, stop=None):
 	name = "{} {}/{}/{}".format(job.kind, job.zoom, job.x, job.y)
 	started = time.monotonic()
 	try:
-		if job.kind == TileState.SUMMARY:
+		if job.kind == Job.SUMMARY:
 			version = build_summary_job(job)
-			queue.finish_summary(job, version, time.monotonic() - started)
+			queue.finish_summary(job)
 			logger.info("Built %s: version %s, %.2fs", name, version, time.monotonic() - started)
 		else:
 			tile, version = render_tile_job(job, process, stop)

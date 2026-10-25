@@ -4,17 +4,17 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 
-from tiles.models import TileRequest, TileState
+from tiles.models import TileRequest, Job
 
 
 class RenderStatusTests(TestCase):
 	def test_shows_the_workers_and_the_queue(self):
-		TileState.objects.create(kind=TileState.TILE, zoom=12, x=1, y=2, status=TileState.RENDERING,
+		Job.objects.create(kind=Job.TILE, zoom=12, x=1, y=2, status=Job.RENDERING,
 			claimed_by="host:1:0", claimed_at=timezone.now())
-		TileState.objects.create(kind=TileState.SUMMARY, zoom=12, x=3, y=4, status=TileState.QUEUED,
+		Job.objects.create(kind=Job.SUMMARY, zoom=12, x=3, y=4, status=Job.QUEUED,
 			idle=True, priority=-1, queued_at=timezone.now())
 		TileRequest.objects.create(zoom=12, x=7, y=8, status=TileRequest.WAITING, attempts=1)
-		TileState.objects.create(kind=TileState.TILE, zoom=10, x=5, y=6, status=TileState.FAILED,
+		Job.objects.create(kind=Job.TILE, zoom=10, x=5, y=6, status=Job.FAILED,
 			attempts=3, error="boom", queued_at=timezone.now())
 		out = StringIO()
 		call_command("render_status", stdout=out)

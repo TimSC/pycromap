@@ -25,3 +25,25 @@ def tile_area(zoom, x, y, margin=1 / 8):
 
 def valid_tile(zoom, x, y):
 	return 0 <= zoom <= 22 and 0 <= x < (1 << zoom) and 0 <= y < (1 << zoom)
+
+
+# A tile's key: its zoom, row and column in one integer, the primary key of
+# completed tiles and summaries (tiles.fields.TileKeyField). Ordered by zoom,
+# then row, then column, so a run of a row's tiles is a range of keys.
+KEY_ZOOM_SHIFT = 48
+KEY_Y_SHIFT = 24
+
+
+def tile_key(zoom, x, y):
+	return (zoom << KEY_ZOOM_SHIFT) | (y << KEY_Y_SHIFT) | x
+
+
+def key_tile(key):
+	"""The (zoom, x, y) of a tile's key."""
+	return key >> KEY_ZOOM_SHIFT, key & ((1 << KEY_Y_SHIFT) - 1), (key >> KEY_Y_SHIFT) & ((1 << 24) - 1)
+
+
+def row_keys(zoom, y, x0, x1):
+	"""The keys of the tiles x0 to x1 (inclusive) of row y at a zoom, as a
+	range (first, last), for key__range."""
+	return tile_key(zoom, x0, y), tile_key(zoom, x1, y)

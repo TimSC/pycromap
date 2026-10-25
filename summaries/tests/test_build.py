@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 
 from summaries import build
 from summaries.lua import summary_filter
-from summaries.models import TileSummary
+from summaries.models import Recipe, TileSummary
 from tiles.tilegeo import tile_bounds
 
 
@@ -369,8 +369,13 @@ class PyramidTests(TestCase):
 			lua.write_bytes(Path(settings.SUMMARY_LUA).read_bytes())
 			with override_settings(SUMMARY_LUA=lua):
 				before = build.recipe()
+				self.assertEqual(build.recipe(), before)  # recorded once
 				lua.write_text(lua.read_text() + "\n-- changed\n")
-				self.assertNotEqual(build.recipe(), before)
+				after = build.recipe()
+				self.assertNotEqual(after, before)
+				# A small id, with the hash and settings it stands for
+				self.assertIsInstance(after, int)
+				self.assertEqual(Recipe.objects.get(pk=after).hash, build.recipe_hash())
 
 	def test_builds_from_the_finer_level(self):
 		# A road across the tile (a line elsewhere would be left out)

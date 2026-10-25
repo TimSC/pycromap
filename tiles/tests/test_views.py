@@ -10,7 +10,7 @@ from django.test import TransactionTestCase, override_settings
 from django.utils import timezone
 
 from tiles.management.commands.render_tiles import render_one
-from tiles.models import TileRequest, TileState
+from tiles.models import Tile, TileRequest
 
 
 class TileViewTests(TransactionTestCase):
@@ -45,7 +45,7 @@ class TileViewTests(TransactionTestCase):
 		path = "{}/{}/{}.{}.pbf.gz".format(zoom, x, y, version)
 		(Path(self.cache.name) / path).parent.mkdir(parents=True, exist_ok=True)
 		(Path(self.cache.name) / path).write_bytes(b"tile")
-		return TileState.objects.create(zoom=zoom, x=x, y=y, status=TileState.DONE, rendered_at=timezone.now(),
+		return Tile.objects.create(zoom=zoom, x=x, y=y, rendered_at=timezone.now(),
 			file=path, data_version=version)
 
 	def flags(self):
@@ -70,7 +70,7 @@ class TileViewTests(TransactionTestCase):
 
 	def test_other_answers_are_not_flagged(self):
 		# An empty cached tile (no file) and a placeholder answer otherwise
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="")
+		Tile.objects.create(zoom=12, x=1, y=2, rendered_at=timezone.now(), file="")
 		patch, seen = self.flags()
 		with patch:
 			self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 204)
@@ -105,21 +105,21 @@ class TileViewTests(TransactionTestCase):
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
 		self.changed_since.assert_not_called()
 		# A minute on, asked, and found unedited: not asked for another minute
-		TileState.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
+		Tile.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
 		self.client.get("/tiles/12/1/2.pbf")
 		self.client.get("/tiles/12/1/2.pbf")
 		self.assertEqual(self.changed_since.call_count, 1)
 		tile.refresh_from_db()
 		self.assertIsNotNone(tile.edits_checked_at)
 		# Another minute on, asked again
-		TileState.objects.filter(pk=tile.pk).update(edits_checked_at=timezone.now() - timedelta(seconds=61))
+		Tile.objects.filter(pk=tile.pk).update(edits_checked_at=timezone.now() - timedelta(seconds=61))
 		self.client.get("/tiles/12/1/2.pbf")
 		self.assertEqual(self.changed_since.call_count, 2)
 
 	@override_settings(EDIT_CHECK_INTERVAL=60, TILE_REQUEST_WAIT=0.2)
 	def test_an_edited_tile_is_not_marked_checked(self):
 		tile = self.cached()
-		TileState.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
+		Tile.objects.filter(pk=tile.pk).update(rendered_at=timezone.now() - timedelta(seconds=61))
 		self.changed_since.return_value = True
 		self.client.get("/tiles/12/1/2.pbf")
 		tile.refresh_from_db()
@@ -155,7 +155,7 @@ class TileViewTests(TransactionTestCase):
 	def test_cached_tile_redirects_to_its_file(self):
 		(Path(self.cache.name) / "12/1").mkdir(parents=True)
 		(Path(self.cache.name) / "12/1/2.5.pbf.gz").write_bytes(b"tile")
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="12/1/2.5.pbf.gz")
+		Tile.objects.create(zoom=12, x=1, y=2, rendered_at=timezone.now(), file="12/1/2.5.pbf.gz")
 		response = self.client.get("/tiles/12/1/2.pbf")
 		self.assertEqual((response.status_code, response["Location"]), (302, "/tilecache/12/1/2.5.pbf.gz"))
 
@@ -196,12 +196,12 @@ class TileViewTests(TransactionTestCase):
 			cached_tile(RequestFactory().get("/"), "12/1/9.pbf")
 
 	def test_empty_cached_tile(self):
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), file="")
+		Tile.objects.create(zoom=12, x=1, y=2, rendered_at=timezone.now(), file="")
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 204)
 
 	@override_settings(TILE_REQUEST_WAIT=0.2)
 	def test_tile_rendered_before_its_zoom_was_cached_is_rendered_again(self):
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE, rendered_at=timezone.now(), data=b"tile")
+		Tile.objects.create(zoom=12, x=1, y=2, rendered_at=timezone.now(), data=b"tile")
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)
 		self.assertEqual(self.asked, [(12, 1, 2)])
 
@@ -209,7 +209,7 @@ class TileViewTests(TransactionTestCase):
 	def test_cached_tile_older_than_max_age_is_rendered_again(self):
 		(Path(self.cache.name) / "12/1").mkdir(parents=True)
 		(Path(self.cache.name) / "12/1/2.5.pbf.gz").write_bytes(b"tile")
-		TileState.objects.create(zoom=12, x=1, y=2, status=TileState.DONE,
+		Tile.objects.create(zoom=12, x=1, y=2,
 			rendered_at=timezone.now() - timedelta(seconds=3601), file="12/1/2.5.pbf.gz")
 		self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 503)
 		self.assertEqual(self.asked, [(12, 1, 2)])
@@ -244,7 +244,7 @@ class TileViewTests(TransactionTestCase):
 		self.assertEqual(response.content, b"vector tile")
 		self.assertEqual((response["Content-Type"], response["Content-Encoding"]), ("application/vnd.mapbox-vector-tile", "gzip"))
 		self.assertEqual(again.status_code, 200)
-		tile = TileState.objects.get()
+		tile = Tile.objects.get()
 		self.assertEqual(tile.data_version, 9)
 
 

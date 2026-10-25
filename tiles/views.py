@@ -18,8 +18,8 @@ from mapdata import source
 from summaries import build as summaries
 
 from . import queue
-from .models import TileRequest, TileState
-from .tilegeo import tile_area, valid_tile
+from .models import Tile, TileRequest
+from .tilegeo import tile_area, tile_key, valid_tile
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def _edited_since(tile):
 		return False
 	if not edited:
 		# Rendering it again starts the wait afresh, from rendered_at
-		TileState.objects.filter(pk=tile.pk).update(edits_checked_at=now)
+		Tile.objects.filter(pk=tile.pk).update(edits_checked_at=now)
 	return edited
 
 
@@ -115,7 +115,7 @@ def _needs_rendering(existing, config):
 	zoom's check_edits is False)."""
 	if not config.get("cache", False):
 		return True
-	if existing is None or existing.status != TileState.DONE or existing.rendered_at is None:
+	if existing is None:
 		return True
 	if existing.file and not (Path(settings.TILE_CACHE_DIR) / existing.file).exists():
 		return True
@@ -132,10 +132,10 @@ def _needs_rendering(existing, config):
 @sync_to_async
 def _ask_for(zoom, x, y, config, request_id):
 	"""If a tile needs rendering, queues the request for it
-	(queue.wait_for_render): (its state if it needn't be rendered, whether
+	(queue.wait_for_render): (its Tile if it needn't be rendered, whether
 	the request waits for a renderer, None), or (None, False, the response to
 	give instead: a placeholder)."""
-	existing = TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x=x, y=y).first()
+	existing = Tile.objects.filter(pk=tile_key(zoom, x, y)).first()
 	if not _needs_rendering(existing, config):
 		return existing, False, None
 	if not _can_render(zoom, x, y, config):
@@ -156,7 +156,7 @@ async def _obtain(zoom, x, y, config, request_id):
 		return tile, None
 	status = await queue.await_render(request_id, settings.TILE_REQUEST_WAIT)
 	if status == TileRequest.DONE:
-		return await TileState.objects.aget(kind=TileState.TILE, zoom=zoom, x=x, y=y), None
+		return await Tile.objects.aget(pk=tile_key(zoom, x, y)), None
 	response = _no_store(HttpResponse("The tile couldn't be rendered" if status == TileRequest.FAILED else
 		"The tile is not ready", status=503, content_type="text/plain"))
 	response["Retry-After"] = "2"

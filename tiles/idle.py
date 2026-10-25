@@ -14,8 +14,9 @@ eventually built.
 
 Tiles are swept the same way, in TileSweep rows of kind "tile": the highest
 marked zoom first, with the budget the summaries leave. A tile is done once
-rendered with its file still in the cache, and is only handed out once every
-summary it is made from is current (idle jobs build nothing first).
+rendered (a Tile) with its file still in the cache, and is only handed out
+once every summary it is made from is stored (idle jobs build nothing first).
+What is under way, or was given up, is in the jobs (Job).
 """
 
 import fcntl
@@ -32,10 +33,11 @@ from summaries import build as summaries
 from summaries.models import TileSummary
 
 from .common import COMMON_DIR
-from .models import TileState, TileSweep
+from .models import Job, Tile, TileSweep
+from .tilegeo import key_tile, row_keys
 
 # The priority of the first idle job planned; the rest come after it, in the
-# order planned (TileState.idle marks them as idle work)
+# order planned (Job.idle marks them as idle work)
 IDLE_PRIORITY = -1.0
 
 # The jobs a sweep row hands out at a time: its first gaps that can be done
@@ -44,9 +46,8 @@ IDLE_PRIORITY = -1.0
 SWEEP_ROW_JOBS = 32
 
 
-# The queries below ask for each column (x IN ...), so that the index of each
-# summary or tile, by (zoom, x, y), finds a row's few: asked for by row alone
-# (or a range of x), it would read every one at the zoom.
+# The queries below ask for summaries and tiles by ranges of their keys
+# (tilegeo.row_keys): a run of a row's tiles is one range.
 
 def _file_present(file):
 	"""Whether a rendered tile's file is in the cache: a tile without one (an
@@ -59,22 +60,22 @@ def _built_in_row(kind, zoom, y):
 	"""The x of what is done in row y at a zoom: current summaries (built as
 	summaries are now; see summaries.build.current), or rendered tiles whose
 	files are still there."""
-	columns = range(1 << zoom)
-	if kind == TileState.SUMMARY:
-		return set(summaries.current(TileSummary.objects.filter(zoom=zoom, x__in=columns, y=y))
-			.values_list("x", flat=True))
-	return {x for x, file in TileState.objects.filter(kind=TileState.TILE, zoom=zoom, x__in=columns, y=y,
-		status=TileState.DONE, rendered_at__isnull=False).values_list("x", "file") if _file_present(file)}
+	keys = row_keys(zoom, y, 0, (1 << zoom) - 1)
+	if kind == Job.SUMMARY:
+		# By key, from the index (tilesummary_current), not the rows
+		return {key_tile(key)[1] for key in summaries.current(TileSummary.objects.filter(pk__range=keys))
+			.values_list("pk", flat=True)}
+	return {x for x, file in Tile.objects.filter(pk__range=keys).values_list("x", "file") if _file_present(file)}
 
 
 def _covered(zoom, y, xs, level):
 	"""Those of x in xs whose tile (zoom, x, y) has every summary beneath it
 	at a level stored, current or not (see summaries.build.missing). One
-	query, for those columns."""
+	query, a range of keys for each row beneath, from the first to the last
+	of xs."""
 	scale = 1 << (level - zoom)
-	stored = set(TileSummary.objects.filter(zoom=level,
-		x__in=[sx for x in xs for sx in range(x * scale, (x + 1) * scale)],
-		y__range=(y * scale, (y + 1) * scale - 1)).values_list("x", "y"))
+	stored = summaries.built_in(level, min(xs) * scale, (max(xs) + 1) * scale - 1,
+		y * scale, (y + 1) * scale - 1) if xs else set()
 	return [x for x in xs if all((sx, sy) in stored for sx in range(x * scale, (x + 1) * scale)
 		for sy in range(y * scale, (y + 1) * scale))]
 
@@ -84,7 +85,7 @@ def _ready_in_row(kind, zoom, y, xs):
 	nothing first: a base summary, from the map data, or a tile made from it,
 	any; a coarser summary, or a tile made from summaries, those whose
 	summaries beneath are all stored (current or not)."""
-	if kind == TileState.SUMMARY:
+	if kind == Job.SUMMARY:
 		beneath = summaries.finer_level(zoom)
 	else:
 		config = settings.TILE_ZOOMS[zoom]
@@ -97,16 +98,12 @@ def _passed_over(kind, zoom):
 	rendering), and those given up, having failed RENDER_ATTEMPTS times,
 	which a row moves past so one that can't be done doesn't hold it up. A
 	job that failed fewer times is handed out again. As ({(x, y)} under way,
-	{(x, y)} given up). Found by status alone, which the queue's index
-	(tilestate_queue) finds the few of: asked for by kind and zoom as well,
-	SQLite would read every job of the zoom."""
+	{(x, y)} given up). Every job is one of these (a job is deleted once
+	done), so they are few."""
 	underway, given_up = set(), set()
-	for k, z, x, y, status, attempts in TileState.objects.filter(
-			status__in=(TileState.QUEUED, TileState.RENDERING, TileState.FAILED)).values_list(
-			"kind", "zoom", "x", "y", "status", "attempts"):
-		if k != kind or z != zoom:
-			continue
-		if status != TileState.FAILED:
+	for x, y, status, attempts in Job.objects.filter(kind=kind, zoom=zoom).values_list(
+			"x", "y", "status", "attempts"):
+		if status != Job.FAILED:
 			underway.add((x, y))
 		elif attempts >= settings.RENDER_ATTEMPTS:
 			given_up.add((x, y))
@@ -178,11 +175,11 @@ def plan(count, worker):
 	for level in summaries.levels():  # finest first
 		if len(jobs) >= count:
 			break
-		jobs.extend(_frontiers(count - len(jobs), TileState.SUMMARY, level, worker))
+		jobs.extend(_frontiers(count - len(jobs), Job.SUMMARY, level, worker))
 	for zoom in _tile_zooms():
 		if len(jobs) >= count:
 			break
-		jobs.extend(_frontiers(count - len(jobs), TileState.TILE, zoom, worker))
+		jobs.extend(_frontiers(count - len(jobs), Job.TILE, zoom, worker))
 	return jobs
 
 
@@ -200,7 +197,7 @@ def release_sweeps(worker):
 
 def idle_queued():
 	"""How many idle jobs are queued and ready to be claimed."""
-	return TileState.objects.filter(status=TileState.QUEUED, idle=True).count()
+	return Job.objects.filter(status=Job.QUEUED, idle=True).count()
 
 
 @contextmanager
@@ -252,17 +249,17 @@ def queue_idle_work(worker):
 		# commit holds the database's one write lock
 		with transaction.atomic():
 			for rank, (kind, zoom, x, y) in enumerate(jobs):
-				job, _ = TileState.objects.get_or_create(kind=kind, zoom=zoom, x=x, y=y,
-					defaults={"status": TileState.DONE})
-				if job.status in (TileState.QUEUED, TileState.RENDERING):
+				job, created = Job.objects.get_or_create(kind=kind, zoom=zoom, x=x, y=y, defaults={
+					"status": Job.QUEUED, "idle": True, "priority": IDLE_PRIORITY - rank, "queued_at": now})
+				if created:
+					made += 1
 					continue
 				# A failed job is tried again (the sweep hands it out once it
 				# can be done), counting on from its attempts, until it has
 				# failed RENDER_ATTEMPTS times
-				failed = job.status == TileState.FAILED
-				if failed and job.attempts >= settings.RENDER_ATTEMPTS:
+				if job.status != Job.FAILED or job.attempts >= settings.RENDER_ATTEMPTS:
 					continue
-				TileState.objects.filter(pk=job.pk).update(status=TileState.QUEUED, idle=True,
-					priority=IDLE_PRIORITY - rank, queued_at=now, attempts=job.attempts if failed else 0, error="")
+				Job.objects.filter(pk=job.pk).update(status=Job.QUEUED, idle=True,
+					priority=IDLE_PRIORITY - rank, queued_at=now, error="")
 				made += 1
 		return made

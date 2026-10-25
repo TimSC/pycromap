@@ -1,10 +1,34 @@
 from django.db import models
 
+from .fields import TileKeyField
+from .tilegeo import tile_key
 
-class TileState(models.Model):
-	"""A job in the render queue, and its result: rendering a tile (made the
-	first time the tile is asked for), or building a tile's summary (made
-	when something needs it; the summary itself is a TileSummary)."""
+
+class TileKeyed(models.Model):
+	"""A completed tile or summary, keyed by its tile (tilegeo.tile_key): one
+	row a tile, kept in the order of the keys, so a run of a row's tiles is
+	read as a range of keys (key__range, tilegeo.row_keys). The zoom, column
+	and row are kept too, for reading; the key is set from them on saving."""
+
+	id = TileKeyField()
+	zoom = models.PositiveSmallIntegerField()
+	x = models.PositiveIntegerField()
+	y = models.PositiveIntegerField()
+
+	class Meta:
+		abstract = True
+
+	def save(self, *args, **kwargs):
+		self.id = tile_key(self.zoom, self.x, self.y)
+		super().save(*args, **kwargs)
+
+
+class Job(models.Model):
+	"""A job in the render queue: rendering a tile, or building a tile's
+	summary, while it is to do. Made when the work is wanted (a request, a
+	tile that needs a summary, or the idle sweep), and deleted once done:
+	the result is a Tile, or a summaries.TileSummary. A job that failed is
+	kept, to be tried again or, after RENDER_ATTEMPTS, given up."""
 
 	TILE = "tile"
 	SUMMARY = "summary"
@@ -12,9 +36,8 @@ class TileState(models.Model):
 
 	QUEUED = "queued"        # waiting for a renderer
 	RENDERING = "rendering"  # a renderer has claimed it
-	DONE = "done"            # rendered
-	FAILED = "failed"        # rendering failed RENDER_ATTEMPTS times
-	STATUSES = [(s, s) for s in (QUEUED, RENDERING, DONE, FAILED)]
+	FAILED = "failed"        # it failed (see attempts)
+	STATUSES = [(s, s) for s in (QUEUED, RENDERING, FAILED)]
 
 	kind = models.CharField(max_length=16, choices=KINDS, default=TILE)
 	zoom = models.PositiveSmallIntegerField()  # for a summary, its level
@@ -35,12 +58,25 @@ class TileState(models.Model):
 	attempts = models.PositiveSmallIntegerField(default=0)
 	error = models.TextField(blank=True)
 
-	# The last rendering: when, from which version of the map data (the
-	# highest atomic edit ID of the objects it holds), how long it took, and the
-	# tile, gzipped: for a cached zoom, the file it is in, relative to
-	# TILE_CACHE_DIR, and otherwise the tile itself (neither for a tile with
-	# nothing in it)
-	rendered_at = models.DateTimeField(null=True, blank=True)
+	class Meta:
+		constraints = [
+			models.UniqueConstraint(fields=["kind", "zoom", "x", "y"], name="job_unique"),
+		]
+		indexes = [
+			models.Index(fields=["status", "-priority"], name="job_queue"),
+		]
+
+	def __str__(self):
+		return "{} {}/{}/{} ({})".format(self.kind, self.zoom, self.x, self.y, self.status)
+
+
+class Tile(TileKeyed):
+	"""A rendered tile: when, from which version of the map data (the highest
+	atomic edit ID of the objects it holds), how long it took, and the tile,
+	gzipped: for a cached zoom, the file it is in, relative to TILE_CACHE_DIR,
+	and otherwise the tile itself (neither for a tile with nothing in it)."""
+
+	rendered_at = models.DateTimeField()
 	data_version = models.BigIntegerField(null=True, blank=True)
 	# When the map in a cached tile's area was last found unedited since the
 	# tile was made (tiles.views._needs_rendering): it isn't asked again for
@@ -48,18 +84,11 @@ class TileState(models.Model):
 	edits_checked_at = models.DateTimeField(null=True, blank=True)
 	render_seconds = models.FloatField(null=True, blank=True)
 	file = models.CharField(max_length=255, blank=True)
+	# Last, so the columns before it are read without reading through it
 	data = models.BinaryField(null=True, blank=True)
 
-	class Meta:
-		constraints = [
-			models.UniqueConstraint(fields=["kind", "zoom", "x", "y"], name="tilestate_unique_job"),
-		]
-		indexes = [
-			models.Index(fields=["status", "-priority"], name="tilestate_queue"),
-		]
-
 	def __str__(self):
-		return "{} {}/{}/{} ({})".format(self.kind, self.zoom, self.x, self.y, self.status)
+		return "tile {}/{}/{}".format(self.zoom, self.x, self.y)
 
 
 class TileSweep(models.Model):
@@ -72,7 +101,7 @@ class TileSweep(models.Model):
 	it is rendered.
 	"""
 
-	kind = models.CharField(max_length=16, choices=TileState.KINDS, default=TileState.TILE)
+	kind = models.CharField(max_length=16, choices=Job.KINDS, default=Job.TILE)
 	zoom = models.PositiveSmallIntegerField()
 	y = models.PositiveIntegerField()
 	# The renderer working the row, and since when (a claim, as for jobs)

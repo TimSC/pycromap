@@ -8,7 +8,8 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from tiles import queue
-from tiles.models import TileRequest, TileState, TileSweep
+from tiles.models import Job, Tile, TileRequest, TileSweep
+from tiles.tilegeo import tile_key
 from tiles.common import NAME_LENGTH, content_hash, describe, file_name
 
 
@@ -24,7 +25,7 @@ class QueueTests(TestCase):
 		TileRequest.objects.filter(pk=same.pk).update(started_at=timezone.now() - timedelta(seconds=5))
 		TileRequest.objects.filter(pk=newest.pk).update(started_at=timezone.now())
 		tile = queue.claim_next("a")
-		self.assertEqual((tile.x, tile.status, tile.claimed_by, tile.attempts), (2, TileState.RENDERING, "a", 1))
+		self.assertEqual((tile.x, tile.status, tile.claimed_by, tile.attempts), (2, Job.RENDERING, "a", 1))
 		# The next, for the other tile, with both its requests
 		tile = queue.claim_next("b")
 		self.assertEqual(tile.x, 1)
@@ -32,13 +33,24 @@ class QueueTests(TestCase):
 			{(TileRequest.CLAIMED, "b")})
 		self.assertIsNone(queue.claim_next("c"))
 
-	def test_the_tile_is_added_to_tile_state_as_it_is_claimed(self):
+	def test_a_job_is_added_for_the_tile_as_it_is_claimed(self):
 		want(1)
-		self.assertFalse(TileState.objects.exists())
+		self.assertFalse(Job.objects.exists())
 		queue.claim_next("a")
-		tile = TileState.objects.get()
-		self.assertEqual((tile.kind, tile.zoom, tile.x, tile.y, tile.status), (TileState.TILE, 13, 1, 2, TileState.RENDERING))
-		self.assertGreater(tile.priority, 0)
+		job = Job.objects.get()
+		self.assertEqual((job.kind, job.zoom, job.x, job.y, job.status), (Job.TILE, 13, 1, 2, Job.RENDERING))
+		self.assertGreater(job.priority, 0)
+
+	def test_a_finished_job_is_deleted_and_its_tile_kept(self):
+		want(1)
+		queue.finish(queue.claim_next("a"), b"tile", 7, 0.5, cached=False)
+		self.assertFalse(Job.objects.exists())
+		tile = Tile.objects.get()
+		self.assertEqual((tile.pk, tile.zoom, tile.x, tile.y, tile.data_version), (tile_key(13, 1, 2), 13, 1, 2, 7))
+		# Rendered again: the same tile, updated
+		want(1)
+		queue.finish(queue.claim_next("a"), b"newer", 8, 0.5, cached=False)
+		self.assertEqual(list(Tile.objects.values_list("data_version", flat=True)), [8])
 
 	def test_cancelled_requests_are_not_claimed(self):
 		want(1, cancelled=True, cancelled_at=timezone.now())
@@ -60,7 +72,7 @@ class QueueTests(TestCase):
 		self.assertEqual(later.status, TileRequest.DONE)
 
 	def test_requests_come_before_idle_work(self):
-		TileState.objects.create(zoom=13, x=5, y=5, status=TileState.QUEUED, idle=True, priority=-1)
+		Job.objects.create(zoom=13, x=5, y=5, status=Job.QUEUED, idle=True, priority=-1)
 		want(1)
 		self.assertEqual(queue.claim_next("a", idle=False).x, 1)
 		# Idle work only for a renderer working ahead
@@ -68,10 +80,10 @@ class QueueTests(TestCase):
 		self.assertEqual(queue.claim_next("a", idle=True).x, 5)
 
 	def test_a_request_for_a_tile_queued_as_idle_work_takes_it(self):
-		TileState.objects.create(zoom=13, x=1, y=2, status=TileState.QUEUED, idle=True, priority=-1)
+		Job.objects.create(zoom=13, x=1, y=2, status=Job.QUEUED, idle=True, priority=-1)
 		want(1)
 		tile = queue.claim_next("a", idle=False)
-		self.assertEqual((tile.x, tile.status), (1, TileState.RENDERING))
+		self.assertEqual((tile.x, tile.status), (1, Job.RENDERING))
 		self.assertGreater(tile.priority, 0)
 
 	@override_settings(RENDER_ATTEMPTS=2)
@@ -80,13 +92,13 @@ class QueueTests(TestCase):
 		queue.fail(queue.claim_next("a"), "boom")
 		request.refresh_from_db()
 		# The tile marked failed; its request waits again, keeping count
-		self.assertEqual((TileState.objects.get().status, request.status, request.attempts),
-			(TileState.FAILED, TileRequest.WAITING, 1))
+		self.assertEqual((Job.objects.get().status, request.status, request.attempts),
+			(Job.FAILED, TileRequest.WAITING, 1))
 		tile = queue.claim_next("a")
 		self.assertEqual(tile.attempts, 2)
 		queue.fail(tile, "boom again")
 		tile.refresh_from_db(); request.refresh_from_db()
-		self.assertEqual((tile.status, tile.error, request.status), (TileState.FAILED, "boom again", TileRequest.FAILED))
+		self.assertEqual((tile.status, tile.error, request.status), (Job.FAILED, "boom again", TileRequest.FAILED))
 
 	def test_a_final_failure_answers_at_once(self):
 		request = want(1)
@@ -98,26 +110,26 @@ class QueueTests(TestCase):
 		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
 			want(1, 2, 13)
 			queue.finish(queue.claim_next("a"), b"tile", 7, 0.5, cached=True)
-			tile = TileState.objects.get()
-			self.assertEqual((tile.status, tile.data_version, tile.file, tile.data), (TileState.DONE, 7, "13/1/2.7.pbf.gz", None))
+			tile = Tile.objects.get()
+			self.assertEqual((tile.data_version, tile.file, tile.data), (7, "13/1/2.7.pbf.gz", None))
 			self.assertEqual((Path(cache) / tile.file).read_bytes(), b"tile")
 			# A newer version replaces the file
 			want(1, 2, 13)
 			queue.finish(queue.claim_next("a"), b"newer", 8, 0.5, cached=True)
 			self.assertEqual(sorted(p.name for p in (Path(cache) / "13/1").iterdir()), ["2.8.pbf.gz"])
 
-	def test_uncached_tile_is_kept_with_its_state(self):
+	def test_uncached_tile_is_kept_in_the_database(self):
 		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
 			want(1, 2, 13)
 			queue.finish(queue.claim_next("a"), b"tile", 7, 0.5, cached=False)
-			tile = TileState.objects.get()
+			tile = Tile.objects.get()
 			self.assertEqual((tile.file, bytes(tile.data)), ("", b"tile"))
 			self.assertEqual(list(Path(cache).iterdir()), [])
 
 	def test_uncached_empty_tile_has_neither(self):
 		want(1, 2, 13)
 		queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=False)
-		tile = TileState.objects.get()
+		tile = Tile.objects.get()
 		self.assertEqual((tile.file, tile.data), ("", None))
 
 	def test_common_contents_point_at_their_file(self):
@@ -130,7 +142,7 @@ class QueueTests(TestCase):
 			for x, data in ((1, sea), (2, gzip.compress(gzip.decompress(sea))), (3, b""), (4, b"tile")):
 				want(x, 2, 12)
 				queue.finish(queue.claim_next("a"), data, 7, 0.5, cached=True)
-			files = dict(TileState.objects.values_list("x", "file"))
+			files = dict(Tile.objects.values_list("x", "file"))
 			# Sea, gzipped at different times: its common file; nothing: land;
 			# anything else: a file of its own
 			self.assertEqual((files[1], files[2], files[3], files[4]),
@@ -144,29 +156,29 @@ class QueueTests(TestCase):
 			(Path(cache) / "common" / "land.pbf.gz").unlink()
 			want(1, 2, 12)
 			queue.finish(queue.claim_next("a"), sea, 9, 0.5, cached=True)
-			self.assertEqual(TileState.objects.get(x=1).file, "12/1/2.9.pbf.gz")
+			self.assertEqual(Tile.objects.get(x=1).file, "12/1/2.9.pbf.gz")
 
 	def test_an_empty_tile_with_no_common_land_has_no_file(self):
 		with tempfile.TemporaryDirectory() as cache, override_settings(TILE_CACHE_DIR=Path(cache)):
 			want(1, 2, 12)
 			queue.finish(queue.claim_next("a"), b"", 7, 0.5, cached=True)
-			self.assertEqual(TileState.objects.get().file, "")
+			self.assertEqual(Tile.objects.get().file, "")
 
 	@override_settings(RENDER_LEASE=60)
 	def test_abandoned_claims_are_requeued(self):
 		request = want(1, 2, 13)
 		queue.claim_next("a")
-		idle = TileState.objects.create(zoom=13, x=5, y=5, status=TileState.QUEUED, idle=True, priority=-1)
+		idle = Job.objects.create(zoom=13, x=5, y=5, status=Job.QUEUED, idle=True, priority=-1)
 		queue.claim_next("b", idle=True)
 		self.assertEqual(queue.requeue_abandoned(), 0)
-		TileState.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
+		Job.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
 		TileRequest.objects.update(claimed_at=timezone.now() - timedelta(seconds=61))
 		self.assertEqual(queue.requeue_abandoned(), 2)
 		request.refresh_from_db(); idle.refresh_from_db()
 		# The request waits again, its tile marked failed; the idle work is queued again
-		self.assertEqual((TileState.objects.get(x=1).status, request.status, request.claimed_by),
-			(TileState.FAILED, TileRequest.WAITING, ""))
-		self.assertEqual(idle.status, TileState.QUEUED)
+		self.assertEqual((Job.objects.get(x=1).status, request.status, request.claimed_by),
+			(Job.FAILED, TileRequest.WAITING, ""))
+		self.assertEqual(idle.status, Job.QUEUED)
 
 	@override_settings(CASCADE_MIN_ZOOM=8)
 	def test_requests_below_cascade_min_zoom_come_after_the_rest(self):
@@ -178,36 +190,36 @@ class QueueTests(TestCase):
 	def test_a_heartbeat_keeps_only_its_renderers_claims(self):
 		want(1, 2, 13); want(2, 2, 13)
 		queue.claim_next("a"); queue.claim_next("b")
-		TileSweep.objects.create(kind=TileState.SUMMARY, zoom=4, y=0, claimed_by="a")
+		TileSweep.objects.create(kind=Job.SUMMARY, zoom=4, y=0, claimed_by="a")
 		long_ago = timezone.now() - timedelta(hours=1)
-		for model in (TileState, TileRequest, TileSweep):
+		for model in (Job, TileRequest, TileSweep):
 			model.objects.update(claimed_at=long_ago)
 		queue.heartbeat("a")
-		self.assertGreater(TileState.objects.get(claimed_by="a").claimed_at, long_ago)
+		self.assertGreater(Job.objects.get(claimed_by="a").claimed_at, long_ago)
 		self.assertGreater(TileRequest.objects.get(claimed_by="a").claimed_at, long_ago)
 		self.assertGreater(TileSweep.objects.get().claimed_at, long_ago)
-		self.assertEqual(TileState.objects.get(claimed_by="b").claimed_at, long_ago)
+		self.assertEqual(Job.objects.get(claimed_by="b").claimed_at, long_ago)
 		self.assertEqual(TileRequest.objects.get(claimed_by="b").claimed_at, long_ago)
 		# So only the other renderer's work is taken for abandoned
 		with override_settings(RENDER_LEASE=60):
 			self.assertEqual(queue.requeue_abandoned(), 1)
-		self.assertEqual(TileState.objects.get(claimed_by="a").status, TileState.RENDERING)
+		self.assertEqual(Job.objects.get(claimed_by="a").status, Job.RENDERING)
 
 	def test_a_stopping_renderer_releases_its_claims_at_once(self):
 		request = want(1, 2, 13)
 		queue.claim_next("a")
-		idle = TileState.objects.create(zoom=13, x=5, y=5, status=TileState.QUEUED, idle=True, priority=-1)
+		idle = Job.objects.create(zoom=13, x=5, y=5, status=Job.QUEUED, idle=True, priority=-1)
 		queue.claim_next("a", idle=True)
 		other = want(2, 2, 13)
 		queue.claim_next("b")
 		self.assertEqual(queue.release_claims("a"), 2)
 		request.refresh_from_db(); idle.refresh_from_db(); other.refresh_from_db()
-		tile = TileState.objects.get(x=1)
+		tile = Job.objects.get(x=1)
 		self.assertEqual((tile.status, tile.error, request.status, request.claimed_by),
-			(TileState.FAILED, "its renderer stopped", TileRequest.WAITING, ""))
-		self.assertEqual((idle.status, idle.claimed_by), (TileState.QUEUED, ""))
+			(Job.FAILED, "its renderer stopped", TileRequest.WAITING, ""))
+		self.assertEqual((idle.status, idle.claimed_by), (Job.QUEUED, ""))
 		# Another renderer's claims are left alone
-		self.assertEqual((TileState.objects.get(x=2).status, other.status), (TileState.RENDERING, TileRequest.CLAIMED))
+		self.assertEqual((Job.objects.get(x=2).status, other.status), (Job.RENDERING, TileRequest.CLAIMED))
 		# and the released request is claimed again
 		self.assertEqual(queue.claim_next("c").x, 1)
 

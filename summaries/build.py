@@ -16,12 +16,13 @@ import os
 
 import pyo5m
 from django.conf import settings
+from django.db.models import Q
 from django.utils import timezone
 from shapely.geometry import LineString, box
 
-from tiles.tilegeo import tile_bounds
+from tiles.tilegeo import key_tile, row_keys, tile_bounds, tile_key
 from .lua import summary_filter
-from .models import TileSummary
+from .models import Recipe, TileSummary
 
 
 # The encoding of summaries' data: o5m, gzipped
@@ -31,12 +32,27 @@ FORMAT = "o5m.gz"
 _recipes = {}
 
 
-def recipe():
-	"""What summaries are built with: a hash of summary.lua and the settings
-	that shape them. A summary with another recipe is out of date."""
-	shaping = json.dumps({"levels": levels(), "simplify": settings.SUMMARY_SIMPLIFY_PIXELS,
+def _shaping():
+	"""The settings that shape summaries, as JSON."""
+	return json.dumps({"levels": levels(), "simplify": settings.SUMMARY_SIMPLIFY_PIXELS,
 		"format": FORMAT, "line_margin": LINE_MARGIN, "min_ring_pixels": MIN_RING_PIXELS,
 		"min_area": {level: _min_area(level) for level in levels()}}, sort_keys=True)
+
+
+def recipe():
+	"""The id of the Recipe summaries are built with now: summary.lua and the
+	settings that shape them, recorded the first time they are used. A
+	summary with another recipe is out of date."""
+	shaping = _shaping()
+	made, _ = Recipe.objects.get_or_create(hash=recipe_hash(shaping),
+		defaults={"settings": shaping, "created_at": timezone.now()})
+	return made.pk
+
+
+def recipe_hash(shaping=None):
+	"""A hash of summary.lua and the settings that shape summaries (shaping,
+	as JSON): what tells recipes apart."""
+	shaping = _shaping() if shaping is None else shaping
 	path = str(settings.SUMMARY_LUA)
 	key = (path, os.stat(path).st_mtime_ns, shaping)
 	if key not in _recipes:
@@ -494,8 +510,8 @@ def decode(blob, format=FORMAT):
 
 
 def store(level, x, y, data, version):
-	return TileSummary.objects.update_or_create(zoom=level, x=x, y=y, defaults={
-		"data": encode(data), "format": FORMAT, "recipe": recipe(), "version": version,
+	return TileSummary.objects.update_or_create(pk=tile_key(level, x, y), defaults={
+		"zoom": level, "x": x, "y": y, "data": encode(data), "format": FORMAT, "recipe_id": recipe(), "version": version,
 		"built_at": timezone.now(),
 		"nodes": len(data.nodes), "ways": len(data.ways), "relations": len(data.relations),
 	})[0]
@@ -503,7 +519,7 @@ def store(level, x, y, data, version):
 
 def load(level, x, y):
 	"""A stored summary, current or not, as (OsmData, version), or None."""
-	summary = TileSummary.objects.filter(zoom=level, x=x, y=y).first()
+	summary = TileSummary.objects.filter(pk=tile_key(level, x, y)).first()
 	if summary is None:
 		return None
 	return decode(summary.data, summary.format), summary.version
@@ -511,11 +527,13 @@ def load(level, x, y):
 
 def built_in(level, x0, x1, y0, y1):
 	"""The stored summaries, current or not, at a level within a range of
-	tiles (x0 to x1, y0 to y1, inclusive), as {(x, y)}: one query, asking for
-	each column, so the index (zoom, x, y) finds each column's few rather than
-	every summary of the level."""
-	return set(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
-		y__range=(y0, y1)).values_list("x", "y"))
+	tiles (x0 to x1, y0 to y1, inclusive), as {(x, y)}: one query, a range of
+	keys for each row."""
+	rows = Q()
+	for y in range(y0, y1 + 1):
+		rows |= Q(pk__range=row_keys(level, y, x0, x1))
+	# By key, which the index has, so the rows (and their data) aren't read
+	return {key_tile(key)[1:] for key in TileSummary.objects.filter(rows).values_list("pk", flat=True)}
 
 
 def missing(tiles):
@@ -524,8 +542,10 @@ def missing(tiles):
 	date only decides whether it is built again (by the idle sweep), not
 	whether what is made from it can go ahead, so a recipe change doesn't
 	hold anything up until the rebuild reaches it."""
-	return [tile for tile in tiles
-		if not TileSummary.objects.filter(zoom=tile[0], x=tile[1], y=tile[2]).exists()]
+	tiles = list(tiles)
+	stored = set(TileSummary.objects.filter(pk__in=[tile_key(*tile) for tile in tiles])
+		.values_list("pk", flat=True))
+	return [tile for tile in tiles if tile_key(*tile) not in stored]
 
 
 def build_from_data(level, x, y, data, version):
@@ -535,7 +555,7 @@ def build_from_data(level, x, y, data, version):
 	a summary built from the map data."""
 	if level != base_level():
 		return
-	if current(TileSummary.objects.filter(zoom=level, x=x, y=y, version=version)).exists():
+	if current(TileSummary.objects.filter(pk=tile_key(level, x, y), version=version)).exists():
 		return
 	data = summarize(data, level, (x, y))
 	store(level, x, y, merge_objects(data, level, x, y), version)

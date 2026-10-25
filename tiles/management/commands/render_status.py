@@ -13,7 +13,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from tiles import queue
-from tiles.models import TileRequest, TileState
+from tiles.models import Job, TileRequest
 
 
 def _name(job):
@@ -48,7 +48,7 @@ class Command(BaseCommand):
 
 		# The renderers, and what each is working on
 		by_worker = {}
-		for job in TileState.objects.filter(status=TileState.RENDERING).order_by("-claimed_at"):
+		for job in Job.objects.filter(status=Job.RENDERING).order_by("-claimed_at"):
 			by_worker.setdefault(job.claimed_by or "(unknown)", []).append(job)
 		self.stdout.write("")
 		self.stdout.write("renderers: {}".format(len(by_worker)))
@@ -73,14 +73,14 @@ class Command(BaseCommand):
 				queue.span(request.started_at), tries))
 
 		# Idle work, in the order it will be taken
-		ready = TileState.objects.filter(status=TileState.QUEUED, idle=True)
+		ready = Job.objects.filter(status=Job.QUEUED, idle=True)
 		self.stdout.write("")
 		self.stdout.write("idle work queued: {}".format(ready.count()))
 		for job in ready.order_by("-priority", "queued_at")[:lines]:
 			self.stdout.write("  " + _row(job, queue.span(job.queued_at)))
 
 		# Failed
-		failed = TileState.objects.filter(status=TileState.FAILED).order_by("-queued_at")
+		failed = Job.objects.filter(status=Job.FAILED).order_by("-queued_at")
 		self.stdout.write("")
 		self.stdout.write("failed: {}".format(failed.count()))
 		for job in failed[:lines]:
