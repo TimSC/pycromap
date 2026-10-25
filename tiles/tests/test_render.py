@@ -20,11 +20,18 @@ class TilemakerIdTests(SimpleTestCase):
 			pyo5m.Way(RING_ID_BASE + 42, [3, 4, 5, 3], {})]
 		data.relations = [pyo5m.Relation(20, [pyo5m.Member("way", RING_ID_BASE + 42, "outer"),
 			pyo5m.Member("way", real, "outer")], {"type": "multipolygon"})]
-		out = _tilemaker_ids(data)
-		self.assertEqual([w.id for w in out.ways], [7, real, TILEMAKER_RING_IDS_FROM, TILEMAKER_RING_IDS_FROM + 1])
-		self.assertLess(TILEMAKER_RING_IDS_FROM + 1, 1 << 42)
-		self.assertEqual([m.ref for m in out.relations[0].members], [TILEMAKER_RING_IDS_FROM + 1, real])
+		out = _tilemaker_ids(data)  # FOSM's ranges, by default
+		start = TILEMAKER_RING_IDS_FROM["fosm"]
+		self.assertEqual([w.id for w in out.ways], [7, real, start, start + 1])
+		self.assertEqual([m.ref for m in out.relations[0].members], [start + 1, real])
+		for ranges, start in TILEMAKER_RING_IDS_FROM.items():
+			self.assertLess(start + 10 ** 9, 1 << 42)  # room below tilemaker's limit
+		with override_settings(MAP_ID_RANGES="osm"):
+			self.assertEqual(_tilemaker_ids(data).ways[2].id, TILEMAKER_RING_IDS_FROM["osm"])
 		self.assertEqual(data.ways[2].id, RING_ID_BASE + 9)  # left as it was
+		# Turned off, the data itself, rings and all
+		with override_settings(TILEMAKER={**settings.TILEMAKER, "renumber_rings": False}):
+			self.assertIs(_tilemaker_ids(data), data)
 		# Without rings, the data itself
 		data.ways, data.relations = data.ways[:2], []
 		self.assertIs(_tilemaker_ids(data), data)

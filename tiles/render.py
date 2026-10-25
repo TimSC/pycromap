@@ -55,20 +55,25 @@ def read_tile_data(zoom, x, y):
 # tilemaker takes way IDs below 2^42, about 4.4e12 (MAX_WAY_ID, in
 # osm_area_processor.cpp). The ways summaries make, the rings of
 # multipolygons, are numbered far above that (summaries.build.RING_ID_BASE),
-# so a tile's input numbers them afresh, from here: above every real way ID
-# (the map's are below 1e12, or, made since pycrocosm, from 2e12 up), and
-# below tilemaker's limit.
-TILEMAKER_RING_IDS_FROM = 4 * 10 ** 12
+# so a tile's input numbers them afresh, from here, for the map's ID ranges
+# (MAP_ID_RANGES): above every real way ID, and below tilemaker's limit. FOSM
+# numbers its objects below 1e12 or, made since pycrocosm, from 2e12;
+# OpenStreetMap's way IDs are far below 1e12.
+TILEMAKER_RING_IDS_FROM = {"fosm": 4 * 10 ** 12, "osm": 10 ** 12}
 
 
 def _tilemaker_ids(data):
 	"""data, with the rings summaries make numbered afresh for tilemaker (and
-	the relations' members to match), or data itself if it has none. data is
-	left as it is."""
+	the relations' members to match), or data itself if it has none, or the
+	renumbering is turned off (TILEMAKER["renumber_rings"]). data is left as
+	it is."""
+	if not settings.TILEMAKER.get("renumber_rings", True):
+		return data
 	high = sorted(w.id for w in data.ways if w.id >= RING_ID_BASE)
 	if not high:
 		return data
-	renumbered = {way_id: TILEMAKER_RING_IDS_FROM + i for i, way_id in enumerate(high)}
+	start = TILEMAKER_RING_IDS_FROM[settings.MAP_ID_RANGES]
+	renumbered = {way_id: start + i for i, way_id in enumerate(high)}
 	out = pyo5m.OsmData()
 	out.nodes, out.bounds = data.nodes, data.bounds
 	# In ID order still: the high IDs come after every other, in their order

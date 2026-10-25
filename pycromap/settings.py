@@ -167,6 +167,14 @@ if MAP_SOURCE not in ("database", "api"):
 	raise ImproperlyConfigured('MAP_SOURCE must be "database" or "api", not {!r}'.format(MAP_SOURCE))
 PYCROCOSM_API_URL = env("PYCROCOSM_API_URL", "http://localhost:8000/")
 
+# The ranges of the map's object IDs, which decide where the multipolygon
+# rings summaries make are numbered in tilemaker's input, clear of every real
+# way (see tiles/render.py): "fosm", whose objects are numbered below 1e12 or,
+# made since pycrocosm, from 2e12; or "osm", OpenStreetMap's, far below 1e12
+MAP_ID_RANGES = env("MAP_ID_RANGES", "fosm")
+if MAP_ID_RANGES not in ("fosm", "osm"):
+	raise ImproperlyConfigured('MAP_ID_RANGES must be "fosm" or "osm", not {!r}'.format(MAP_ID_RANGES))
+
 # The pycrocosm map database (DATABASES["pycrocosm"]), for MAP_SOURCE "database":
 
 # The static layer of tables (the imported planet, pgmap's dbtableprefix) and
@@ -189,6 +197,11 @@ TILEMAKER = {
 	"input_format": env("TILEMAKER_INPUT_FORMAT", "o5m"),
 	# Seconds a tile may take
 	"timeout": RENDER_TIMEOUT,
+	# Whether the multipolygon rings summaries make, whose IDs are above what
+	# tilemaker takes (2^42), are numbered afresh in each tile's input (see
+	# tiles/render.py). Turned off, they are given as they are, which stock
+	# tilemaker refuses: only for a tilemaker built without that limit.
+	"renumber_rings": env("TILEMAKER_RENUMBER_RINGS", "true").lower() in ("1", "true", "yes"),
 }
 
 # How each zoom is made. Each zoom served has an entry:

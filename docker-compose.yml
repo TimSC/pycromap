@@ -37,6 +37,7 @@ x-pycromap: &pycromap
     # Where the map data is read from: the database below, or pycrocosm's web
     # API (MAP_SOURCE=api), by default on the machine running Docker
     MAP_SOURCE: ${MAP_SOURCE:-database}
+    MAP_ID_RANGES: ${MAP_ID_RANGES:-fosm}
     PYCROCOSM_API_URL: ${PYCROCOSM_API_URL:-http://host.docker.internal:8000/}
     PYCROCOSM_DB_HOST: ${PYCROMAP_DB_HOST:-host.docker.internal}
     PYCROCOSM_DB_PORT: ${PYCROCOSM_DB_PORT:-5432}
@@ -52,6 +53,7 @@ x-pycromap: &pycromap
     EDIT_CHECK_INTERVAL: ${EDIT_CHECK_INTERVAL:-600}
     CASCADE_MIN_ZOOM: ${CASCADE_MIN_ZOOM:-8}
     RENDER_TIMEOUT: ${RENDER_TIMEOUT:-600}
+    TILEMAKER_RENUMBER_RINGS: ${TILEMAKER_RENUMBER_RINGS:-true}
     # render_tiles processes the renderer runs
     RENDER_WORKERS: ${RENDER_WORKERS:-8}
     # Whether idle renderers work ahead (see README.md)
