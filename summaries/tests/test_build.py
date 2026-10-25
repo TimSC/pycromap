@@ -51,6 +51,17 @@ class FilterTests(TestCase):
 			keep("node", {"place": "country", "name": "X"}, level)
 			keep("relation", {"type": "boundary", "boundary": "administrative", "admin_level": "2"}, level)
 
+	def test_railways_and_late_landuse_only_at_level_12(self):
+		# Drawn only from z10 (railways) or z11 (commercial land use and the
+		# like), which only level 12's summaries are drawn at
+		keep = summary_filter()
+		self.assertIsNotNone(keep("way", {"railway": "rail"}, 12, False))
+		self.assertIsNone(keep("way", {"railway": "rail"}, 10, False))
+		self.assertIsNotNone(keep("way", {"landuse": "commercial"}, 12, True))
+		self.assertIsNone(keep("way", {"landuse": "commercial"}, 10, True))
+		self.assertIsNone(keep("relation", {"type": "multipolygon", "landuse": "industrial"}, 8))
+		self.assertIsNotNone(keep("way", {"landuse": "residential"}, 10, True))  # drawn by its size
+
 	def test_coastlines_are_not_kept(self):
 		# The sea is drawn from the coastline shapefile, so OSM's coastline
 		# ways, open or closed, are left out
@@ -163,7 +174,25 @@ class SummarizeTests(TestCase):
 		small = build.MIN_RING_PIXELS * 360.0 / (1 << 6) / 4096 / 2
 		out = build.summarize(self.ring_data(size=small), 6)
 		self.assertEqual((out.ways, out.relations), ([], []))
-		self.assertEqual(len(build.summarize(self.ring_data(size=small * 4), 6).relations), 1)
+		# One big enough to be drawn is kept
+		self.assertEqual(len(build.summarize(self.ring_data(size=small * 64), 6).relations), 1)
+
+	def test_areas_too_small_to_be_drawn_are_left_out(self):
+		# The profile draws an area only if bigger than a 256-pixel tile's
+		# pixel at the zoom below, squared: at the highest zoom drawn from
+		# level 6 (z5), 32 level-6 pixels square (a quarter of that area)
+		pixel = 360.0 / (1 << 6) / 4096
+		self.assertEqual(build._min_area(6), 32 * 32)
+		def wood(side):
+			return osm(nodes=[pyo5m.Node(1, 50.0, -1.0), pyo5m.Node(2, 50.0, -1.0 + side * pixel),
+				pyo5m.Node(3, 50.0 + side * pixel, -1.0 + side * pixel), pyo5m.Node(4, 50.0 + side * pixel, -1.0)],
+				ways=[pyo5m.Way(10, [1, 2, 3, 4, 1], {"landuse": "forest"})])
+		self.assertEqual(build.summarize(wood(10), 6).ways, [])
+		self.assertEqual(len(build.summarize(wood(100), 6).ways), 1)
+		# A closed way that is a line is kept, however small
+		line = wood(10)
+		line.ways[0].tags = {"highway": "motorway"}
+		self.assertEqual(len(build.summarize(line, 6).ways), 1)
 
 	def test_rings_not_reaching_the_tile_are_left_out(self):
 		west, south, east, north = tile_bounds(12, 2030, 1360)

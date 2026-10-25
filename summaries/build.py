@@ -35,7 +35,8 @@ def recipe():
 	"""What summaries are built with: a hash of summary.lua and the settings
 	that shape them. A summary with another recipe is out of date."""
 	shaping = json.dumps({"levels": levels(), "simplify": settings.SUMMARY_SIMPLIFY_PIXELS,
-		"format": FORMAT, "line_margin": LINE_MARGIN, "min_ring_pixels": MIN_RING_PIXELS}, sort_keys=True)
+		"format": FORMAT, "line_margin": LINE_MARGIN, "min_ring_pixels": MIN_RING_PIXELS,
+		"min_area": {level: _min_area(level) for level in levels()}}, sort_keys=True)
 	path = str(settings.SUMMARY_LUA)
 	key = (path, os.stat(path).st_mtime_ns, shaping)
 	if key not in _recipes:
@@ -144,6 +145,44 @@ def simplify_refs(refs, coords, tol):
 	return out
 
 
+# The profile draws an area at zoom z only if it is bigger than a pixel of a
+# 256-pixel tile at z - 1, squared (SetMinZoomByArea, profile/process.lua).
+# Summaries keep areas down to this share of that, at the highest zoom drawn
+# from their level: tilemaker measures an area's true size, smaller than its
+# size on the map away from the equator, so this keeps a little more than is
+# drawn. Part of the recipe.
+AREA_KEEP_FRACTION = 0.25
+
+# The tags of the areas the profile draws by their size
+_AREA_KEYS = ("landuse", "natural", "leisure", "water", "aeroway")
+_LINE_KEYS = ("highway", "railway", "waterway", "boundary")
+
+
+def _min_area(level):
+	"""The smallest area kept in summaries at a level, in square pixels of a
+	4096-pixel tile at the level (see AREA_KEEP_FRACTION), or None if no zoom
+	is drawn from the level."""
+	zooms = [zoom for zoom, config in settings.TILE_ZOOMS.items()
+		if config.get("source") == "summary" and config.get("level") == level]
+	if not zooms:
+		return None
+	side = 16 * 2 ** (level - max(zooms) + 1)  # a 256-pixel tile's pixel at that zoom - 1, in level pixels
+	return side * side * AREA_KEEP_FRACTION
+
+
+def _ring_area(refs, coords, pixel):
+	"""The area of a ring, in square pixels (pixel: a pixel's size in degrees)."""
+	points = [coords[ref] for ref in refs if ref in coords]
+	twice = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1]))
+	return abs(twice) / 2 / (pixel * pixel)
+
+
+def _is_area(tags):
+	"""Whether a closed way's kept tags make it an area the profile draws by
+	its size, not a line (a boundary, a road)."""
+	return any(key in tags for key in _AREA_KEYS) and not any(key in tags for key in _LINE_KEYS)
+
+
 # Rings of a multipolygon smaller than this, in pixels of a 4096-pixel tile
 # at the summary's level (no more than half that at the zooms drawn from it),
 # are left out of its summary: too small to see. Part of the recipe.
@@ -210,8 +249,10 @@ def summarize(data, level, tile=None):
 
 	A multipolygon drawn as an area is kept as its rings: its member ways are
 	joined into rings, each simplified whole, and rings too small to see at
-	the level (MIN_RING_PIXELS), or, for a tile (x, y), that don't reach it,
-	are left out. Simplified way by way, a ring joined from many short ways
+	the level (MIN_RING_PIXELS), or to be drawn at the zooms drawn from it
+	(_min_area), or, for a tile (x, y), that don't reach it, are left out.
+	An area that is a closed way of its own is left out when too small to be
+	drawn too. Simplified way by way, a ring joined from many short ways
 	(a woodland of thousands of woods, say) keeps both ends of every one of
 	them, at any level. Ways a chain can't be closed from are kept as they are.
 
@@ -224,6 +265,7 @@ def summarize(data, level, tile=None):
 	coords = {node.id: (node.lon, _latp(node.lat)) for node in data.nodes}
 	reach = _reach(level, *tile) if tile is not None else None
 	pixel = 360.0 / (1 << level) / 4096
+	min_area = _min_area(level)
 	source = {way.id: way for way in data.ways}
 
 	relations = []
@@ -255,6 +297,8 @@ def summarize(data, level, tile=None):
 				ys = [coords[ref][1] for ref in refs]
 				if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_RING_PIXELS * pixel:
 					continue
+				if min_area is not None and _ring_area(refs, coords, pixel) < min_area:
+					continue
 				if reach is not None and not reach.intersects(box(min(xs), min(ys), max(xs), max(ys))):
 					continue
 				refs = simplify_refs(refs, coords, tol)
@@ -274,6 +318,10 @@ def summarize(data, level, tile=None):
 		tags = keep("way", way.tags, level, closed)
 		needed = way.id in member_ways or way.id in unjoined
 		if tags is None and not needed:
+			continue
+		# An area too small to be drawn at the zooms drawn from the level
+		if (closed and not needed and min_area is not None and _is_area(tags)
+				and _ring_area(way.refs, coords, pixel) < min_area):
 			continue
 		refs = simplify_refs(way.refs, coords, tol)
 		# An area simplified away is too small to show, unless a relation

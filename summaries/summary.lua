@@ -51,6 +51,17 @@ local landuse = set { "residential", "commercial", "industrial", "retail", "rail
 local natural = set { "water", "wood", "scrub", "grassland", "heath", "wetland",
 	"beach", "sand", "bare_rock", "scree", "bay" }
 local leisure = set { "park", "nature_reserve", "golf_course", "garden" }
+
+-- Land use the profile draws only from z11 (MinZoom(11), in its landuse
+-- layer): kept only at the levels marked here, as no zoom drawn from a
+-- coarser level shows it. Residential is drawn by its size, so kept at every
+-- level (areas too small to draw are left out by summaries/build.py).
+local late_landuse = set { "commercial", "industrial", "retail", "railway", "cemetery", "military", "quarry" }
+local late_landuse_levels = { [12] = true }
+
+-- Main railway lines are drawn from z10 (z8 for usage=main, a tag summaries
+-- don't keep): kept only at the levels marked here
+local railway_levels = { [12] = true }
 local waterways = { [12] = set { "river", "canal" }, [10] = set { "river", "canal" },
 	[8] = set { "river" }, [6] = set { "river" }, [4] = set { "river" }, [2] = set {} }
 
@@ -73,9 +84,11 @@ local function admin_boundary(tags, level)
 	return tags.boundary == "administrative" and (tonumber(tags.admin_level) or 11) <= admin_levels[level]
 end
 
-local function area(tags)
-	return landuse[tags.landuse] or natural[tags.natural] or leisure[tags.leisure]
-		or tags.aeroway == "aerodrome"
+local function area(tags, level)
+	if landuse[tags.landuse] and (not late_landuse[tags.landuse] or late_landuse_levels[level]) then
+		return true
+	end
+	return natural[tags.natural] or leisure[tags.leisure] or tags.aeroway == "aerodrome"
 end
 
 function node_filter(tags, level)
@@ -85,19 +98,19 @@ end
 
 function way_filter(tags, level, closed)
 	if tags.highway and roads[level][tags.highway] then return keep(tags) end
-	-- Main lines only
-	if tags.railway == "rail" and tags.service == nil then return keep(tags) end
+	-- Main lines only, at the levels whose zooms show them
+	if tags.railway == "rail" and tags.service == nil and railway_levels[level] then return keep(tags) end
 	if tags.waterway and waterways[level][tags.waterway] then return keep(tags) end
 	-- Not coastlines: the sea and land are drawn from the coastline
 	-- shapefile, not OSM's coastline ways, which (long, and kept whole) were
 	-- most of what coastal summaries held
 	if admin_boundary(tags, level) then return keep(tags) end
-	if closed and area(tags) then return keep(tags) end
+	if closed and area(tags, level) then return keep(tags) end
 	return nil
 end
 
 function relation_filter(tags, level)
-	if tags.type == "multipolygon" and area(tags) then return keep(tags) end
+	if tags.type == "multipolygon" and area(tags, level) then return keep(tags) end
 	if tags.type == "boundary" and admin_boundary(tags, level) then return keep(tags) end
 	return nil
 end
