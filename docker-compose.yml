@@ -68,13 +68,15 @@ x-pycromap: &pycromap
     # downloaded (tilemaker's get-coastline.sh and get-landcover.sh)
     - ${COASTLINE_DIR:-./tilemaker/coastline}:/app/tilemaker/coastline:ro
     - ${LANDCOVER_DIR:-./tilemaker/landcover}:/app/tilemaker/landcover:ro
-    # The settings, tilemaker's profile (config.json, process.lua) and the
-    # summaries' rules, from the host, so a change to them needs only a
-    # restart (docker compose restart), not a rebuild. Changing summary.lua
-    # makes every summary out of date (see summaries/build.py's recipe).
+    # The settings, tilemaker's profile (config.json, process.lua), the
+    # summaries' rules and the map style, from the host, so a change to them
+    # needs only a restart (docker compose restart), not a rebuild; the style,
+    # read afresh for each request, not even that. Changing summary.lua makes
+    # every summary out of date (see summaries/build.py's recipe).
     - ./pycromap/settings.py:/app/pycromap/settings.py:ro
     - ./profile:/app/profile:ro
     - ./summaries/summary.lua:/app/summaries/summary.lua:ro
+    - ./tiles/static/tiles/style.json:/app/tiles/static/tiles/style.json:ro
 
 services:
   migrate:

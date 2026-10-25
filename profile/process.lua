@@ -18,6 +18,10 @@ preferred_language_attribute = "name:latin"
 default_language_attribute = "name_int"
 -- Also write these languages if they differ - for example, { "de", "fr" }
 additional_languages = { }
+-- Or write every name:* tag an object has (as an attribute of the same name,
+-- if it differs), so the style can pick any language. Costs tile size where
+-- many names are translated: most at z3-z6, from country labels
+all_languages = true
 --------
 
 -- Enter/exit Tilemaker
@@ -877,6 +881,14 @@ function SetNameAttributes()
 		iname = Find("name:"..lang)
 		if iname=="" then iname=name end
 		if iname~=main_written and iname ~= "" then Attribute("name:"..lang, iname) end
+	end
+	if all_languages then
+		for _, key in ipairs(AllKeys()) do
+			if string.sub(key, 1, 5) == "name:" and key ~= preferred_language_attribute then
+				iname = Find(key)
+				if iname ~= main_written and iname ~= "" then Attribute(key, iname) end
+			end
+		end
 	end
 end
 
