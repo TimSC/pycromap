@@ -1,4 +1,6 @@
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 
 import pyo5m
 from django.test import TestCase, override_settings
@@ -149,3 +151,59 @@ class QueueIdleTests(TestCase):
 			self.assertEqual(idle.queue_idle_work("w"), 0)  # another is planning
 		self.assertFalse(idle.planning_now())
 		self.assertEqual(idle.queue_idle_work("w"), 4)
+
+
+# Tiles at 3 and 2, rendered ahead, from the summaries at 4 and 3
+GZOOMS = {4: {"source": "data", "cache": False, "summary": True},
+	3: {"source": "summary", "level": 4, "cache": True, "summary": True, "idle_tile_gen": True},
+	2: {"source": "summary", "level": 3, "cache": True, "idle_tile_gen": True}}
+
+
+@override_settings(TILE_ZOOMS=GZOOMS)
+class TileGenTests(TestCase):
+	def setUp(self):
+		self.cache = tempfile.TemporaryDirectory()
+		self.settings = override_settings(TILE_CACHE_DIR=Path(self.cache.name))
+		self.settings.enable()
+
+	def tearDown(self):
+		self.settings.disable()
+		self.cache.cleanup()
+
+	def build_all(self):
+		for level in (4, 3):
+			for x in range(1 << level):
+				for y in range(1 << level):
+					build.store(level, x, y, pyo5m.OsmData(), 1)
+
+	def test_tiles_once_summary_work_runs_out(self):
+		planned = idle.plan(10, "w")
+		self.assertEqual({kind for kind, _, _, _ in planned}, {TileState.SUMMARY})
+		self.build_all()
+		planned = idle.plan(100, "w")
+		# The highest marked zoom first, row by row; then the next, with
+		# what is left
+		self.assertEqual(planned[:8], [(TileState.TILE, 3, x, 0) for x in range(8)])
+		self.assertEqual(len([j for j in planned if j[1] == 3]), 64)
+		self.assertEqual(planned[64:], [(TileState.TILE, 2, x, y) for y in range(4) for x in range(4)])
+
+	def test_only_tiles_whose_summaries_are_built(self):
+		self.build_all()
+		TileSummary.objects.filter(zoom=4, x=0, y=0).delete()
+		planned = idle.plan(1000, "w")
+		self.assertIn((TileState.SUMMARY, 4, 0, 0), planned)  # summary work first
+		self.assertNotIn((TileState.TILE, 3, 0, 0), planned)  # made from it, so not yet
+		self.assertIn((TileState.TILE, 3, 1, 0), planned)
+
+	def test_a_tile_is_done_while_its_file_is_there(self):
+		self.build_all()
+		now = timezone.now()
+		(Path(self.cache.name) / "3/1").mkdir(parents=True)
+		(Path(self.cache.name) / "3/1/0.1.pbf.gz").write_bytes(b"tile")
+		for x, file in ((0, "3/0/0.1.pbf.gz"), (1, "3/1/0.1.pbf.gz"), (2, "common/sea.pbf.gz"), (3, "")):
+			TileState.objects.create(kind=TileState.TILE, zoom=3, x=x, y=0, status=TileState.DONE,
+				rendered_at=now, file=file)
+		planned = idle.plan(1000, "w")
+		self.assertIn((TileState.TILE, 3, 0, 0), planned)  # its file is gone
+		for x in (1, 2, 3):  # its file, a common file (trusted), or none (empty)
+			self.assertNotIn((TileState.TILE, 3, x, 0), planned)

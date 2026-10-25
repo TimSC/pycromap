@@ -256,12 +256,16 @@ class PyramidTests(TestCase):
 		self.assertEqual(build.finer_level(10), 12)
 		self.assertIsNone(build.finer_level(12))
 
-	def test_old_recipe_counts_as_missing(self):
+	def test_old_recipe_is_out_of_date_but_still_usable(self):
 		build.store(12, 1, 2, osm(), 5)
 		self.assertEqual(build.missing([(12, 1, 2), (12, 1, 3)]), [(12, 1, 3)])
 		with override_settings(SUMMARY_SIMPLIFY_PIXELS=settings.SUMMARY_SIMPLIFY_PIXELS * 2):
-			self.assertEqual(build.missing([(12, 1, 2)]), [(12, 1, 2)])
-			self.assertIsNone(build.load(12, 1, 2))
+			# Out of date, to be built again...
+			self.assertFalse(build.current(TileSummary.objects.filter(zoom=12, x=1, y=2)).exists())
+			# ...but what is made from it can still go ahead
+			self.assertEqual(build.missing([(12, 1, 2)]), [])
+			self.assertEqual(build.load(12, 1, 2)[1], 5)
+			self.assertEqual(build.built_in(12, 1, 1, 2, 2), {(1, 2)})
 
 	def test_changing_the_lua_changes_the_recipe(self):
 		with tempfile.TemporaryDirectory() as work:

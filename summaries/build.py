@@ -48,7 +48,9 @@ def recipe():
 
 
 def current(queryset):
-	"""The summaries of a queryset built as summaries now are."""
+	"""The summaries of a queryset built as summaries now are. Only whether a
+	summary is to be built again depends on this: anything stored can be
+	built on (see missing)."""
 	return queryset.filter(format=FORMAT, recipe=recipe())
 
 
@@ -348,27 +350,30 @@ def store(level, x, y, data, version):
 
 
 def load(level, x, y):
-	"""A current stored summary, as (OsmData, version), or None."""
-	summary = current(TileSummary.objects.filter(zoom=level, x=x, y=y)).first()
+	"""A stored summary, current or not, as (OsmData, version), or None."""
+	summary = TileSummary.objects.filter(zoom=level, x=x, y=y).first()
 	if summary is None:
 		return None
 	return decode(summary.data, summary.format), summary.version
 
 
 def built_in(level, x0, x1, y0, y1):
-	"""The current summaries at a level within a range of tiles (x0 to x1, y0
-	to y1, inclusive), as {(x, y)}: one query, asking for each column, so the
-	index (zoom, x, y, ...) finds each column's few rather than every summary
-	of the level."""
-	return set(current(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
-		y__range=(y0, y1))).values_list("x", "y"))
+	"""The stored summaries, current or not, at a level within a range of
+	tiles (x0 to x1, y0 to y1, inclusive), as {(x, y)}: one query, asking for
+	each column, so the index (zoom, x, y) finds each column's few rather than
+	every summary of the level."""
+	return set(TileSummary.objects.filter(zoom=level, x__in=range(x0, x1 + 1),
+		y__range=(y0, y1)).values_list("x", "y"))
 
 
 def missing(tiles):
-	"""Those of the summaries (level, x, y) that aren't stored, or are out of
-	date."""
+	"""Those of the summaries (level, x, y) that aren't stored. One out of date
+	(built with another recipe) can still be built on: whether it is out of
+	date only decides whether it is built again (by the idle sweep), not
+	whether what is made from it can go ahead, so a recipe change doesn't
+	hold anything up until the rebuild reaches it."""
 	return [tile for tile in tiles
-		if not current(TileSummary.objects.filter(zoom=tile[0], x=tile[1], y=tile[2])).exists()]
+		if not TileSummary.objects.filter(zoom=tile[0], x=tile[1], y=tile[2]).exists()]
 
 
 def build_from_data(level, x, y, data, version):

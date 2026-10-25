@@ -208,6 +208,11 @@ TILEMAKER = {
 #              been edited since (see mapdata/changes.py); True unless set.
 #              Zooms made from summaries aren't checked: rendering them again
 #              would only use the same summaries.
+#   "idle_tile_gen": for a cached zoom, whether idle renderers render its
+#              tiles ahead, once summary work runs out (see tiles/idle.py):
+#              the highest such zoom first, each tile once every summary it
+#              is made from is built. Otherwise its tiles are only rendered
+#              when asked for.
 # Zooms without an entry are not served. Above the highest, the map viewer
 # scales its tiles up (VIEWER_MAX_ZOOM): the profile gives z12 the content of
 # upstream's z14 (see profile/process.lua).
@@ -218,8 +223,18 @@ TILE_ZOOMS = {
 	9: {"source": "summary", "level": 10, "cache": True},
 	8: {"source": "summary", "level": 10, "cache": True, "summary": True},
 	7: {"source": "summary", "level": 8, "cache": True},
-	6: {"source": "summary", "level": 8, "cache": True},
+	6: {"source": "summary", "level": 8, "cache": True, "summary": True, "idle_tile_gen": True},
+	5: {"source": "summary", "level": 6, "cache": True, "idle_tile_gen": True},
+	4: {"source": "summary", "level": 6, "cache": True, "summary": True, "idle_tile_gen": True},
+	3: {"source": "summary", "level": 4, "cache": True, "idle_tile_gen": True},
+	2: {"source": "summary", "level": 4, "cache": True, "summary": True, "idle_tile_gen": True},
+	1: {"source": "summary", "level": 2, "cache": True, "idle_tile_gen": True},
+	0: {"source": "summary", "level": 2, "cache": True, "idle_tile_gen": True},
 }
+for _zoom, _config in TILE_ZOOMS.items():
+	if _config.get("idle_tile_gen") and not _config.get("cache"):
+		raise ImproperlyConfigured("TILE_ZOOMS[{}]: idle_tile_gen needs cache: an uncached tile "
+			"isn't kept".format(_zoom))
 
 # ---- Summaries
 
