@@ -7,8 +7,27 @@ import pyo5m
 from django.conf import settings
 from django.test import SimpleTestCase, override_settings
 
-from tiles.render import run_tilemaker
+from summaries.build import RING_ID_BASE
+from tiles.render import TILEMAKER_RING_IDS_FROM, _tilemaker_ids, run_tilemaker
 from tiles.tilegeo import tile_area, tile_bounds
+
+
+class TilemakerIdTests(SimpleTestCase):
+	def test_rings_are_numbered_afresh_below_tilemakers_limit(self):
+		data = pyo5m.OsmData()
+		real = 2000000000005  # a way made since pycrocosm
+		data.ways = [pyo5m.Way(7, [1, 2], {}), pyo5m.Way(real, [2, 3], {}), pyo5m.Way(RING_ID_BASE + 9, [1, 2, 3, 1], {}),
+			pyo5m.Way(RING_ID_BASE + 42, [3, 4, 5, 3], {})]
+		data.relations = [pyo5m.Relation(20, [pyo5m.Member("way", RING_ID_BASE + 42, "outer"),
+			pyo5m.Member("way", real, "outer")], {"type": "multipolygon"})]
+		out = _tilemaker_ids(data)
+		self.assertEqual([w.id for w in out.ways], [7, real, TILEMAKER_RING_IDS_FROM, TILEMAKER_RING_IDS_FROM + 1])
+		self.assertLess(TILEMAKER_RING_IDS_FROM + 1, 1 << 42)
+		self.assertEqual([m.ref for m in out.relations[0].members], [TILEMAKER_RING_IDS_FROM + 1, real])
+		self.assertEqual(data.ways[2].id, RING_ID_BASE + 9)  # left as it was
+		# Without rings, the data itself
+		data.ways, data.relations = data.ways[:2], []
+		self.assertIs(_tilemaker_ids(data), data)
 
 
 class TileGeoTests(SimpleTestCase):

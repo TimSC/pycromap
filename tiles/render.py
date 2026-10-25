@@ -10,6 +10,7 @@ import pyo5m
 from django.conf import settings
 
 from mapdata.source import read_area
+from summaries.build import RING_ID_BASE
 
 from .tilegeo import tile_area
 
@@ -51,12 +52,38 @@ def read_tile_data(zoom, x, y):
 	return read_area(*tile_area(zoom, x, y))
 
 
+# tilemaker takes way IDs below 2^42, about 4.4e12 (MAX_WAY_ID, in
+# osm_area_processor.cpp). The ways summaries make, the rings of
+# multipolygons, are numbered far above that (summaries.build.RING_ID_BASE),
+# so a tile's input numbers them afresh, from here: above every real way ID
+# (the map's are below 1e12, or, made since pycrocosm, from 2e12 up), and
+# below tilemaker's limit.
+TILEMAKER_RING_IDS_FROM = 4 * 10 ** 12
+
+
+def _tilemaker_ids(data):
+	"""data, with the rings summaries make numbered afresh for tilemaker (and
+	the relations' members to match), or data itself if it has none. data is
+	left as it is."""
+	high = sorted(w.id for w in data.ways if w.id >= RING_ID_BASE)
+	if not high:
+		return data
+	renumbered = {way_id: TILEMAKER_RING_IDS_FROM + i for i, way_id in enumerate(high)}
+	out = pyo5m.OsmData()
+	out.nodes, out.bounds = data.nodes, data.bounds
+	# In ID order still: the high IDs come after every other, in their order
+	out.ways = [pyo5m.Way(renumbered.get(w.id, w.id), w.refs, w.tags) for w in data.ways]
+	out.relations = [pyo5m.Relation(r.id, [pyo5m.Member(m.type, renumbered.get(m.ref, m.ref) if m.type == "way" else m.ref,
+		m.role) for m in r.members], r.tags) for r in data.relations]
+	return out
+
+
 def render_data(data, zoom, x, y):
 	"""Renders a tile from map data (a pyo5m OsmData). Returns it as a gzipped
 	vector tile, or b"" if there was nothing to draw."""
 	with tempfile.TemporaryDirectory(prefix="pycromap-") as work:
 		input_path = os.path.join(work, "area." + settings.TILEMAKER["input_format"])
-		pyo5m.save(data, input_path)
+		pyo5m.save(_tilemaker_ids(data), input_path)
 		tile = run_tilemaker(input_path, zoom, x, y, os.path.join(work, "tiles"))
 	# Gzipped, whatever tilemaker's config says, as tiles are kept and sent
 	if tile and tile[:2] != b"\x1f\x8b":

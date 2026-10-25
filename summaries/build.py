@@ -35,7 +35,7 @@ def recipe():
 	"""What summaries are built with: a hash of summary.lua and the settings
 	that shape them. A summary with another recipe is out of date."""
 	shaping = json.dumps({"levels": levels(), "simplify": settings.SUMMARY_SIMPLIFY_PIXELS,
-		"format": FORMAT, "line_margin": LINE_MARGIN}, sort_keys=True)
+		"format": FORMAT, "line_margin": LINE_MARGIN, "min_ring_pixels": MIN_RING_PIXELS}, sort_keys=True)
 	path = str(settings.SUMMARY_LUA)
 	key = (path, os.stat(path).st_mtime_ns, shaping)
 	if key not in _recipes:
@@ -144,16 +144,87 @@ def simplify_refs(refs, coords, tol):
 	return out
 
 
+# Rings of a multipolygon smaller than this, in pixels of a 4096-pixel tile
+# at the summary's level (no more than half that at the zooms drawn from it),
+# are left out of its summary: too small to see. Part of the recipe.
+MIN_RING_PIXELS = 2
+
+# The first ID of the ways a summary makes for multipolygon rings joined from
+# several member ways: far above any OSM way ID, with room for IDs that don't
+# collide. They are above what tilemaker takes, so a tile's input numbers
+# them afresh (tiles.render).
+RING_ID_BASE = 1 << 56
+
+
+def _ring_id(relation_id, first_way_id):
+	"""The ID of a ring of a relation joined from member ways, the lowest of
+	them first_way_id: the same in every summary holding it, so that merging
+	summaries (which keeps one object for each ID) keeps one copy of it."""
+	digest = hashlib.sha1("{}:{}".format(relation_id, first_way_id).encode()).digest()
+	return RING_ID_BASE + int.from_bytes(digest[:6], "big")
+
+
+def _join_rings(parts):
+	"""Joins ways (id, refs) end to end into closed rings. Returns (rings,
+	leftovers): the rings as (refs, the IDs of the ways joined), and the IDs
+	of the ways of chains that couldn't be closed (a member missing, say)."""
+	rings, open_ = [], []
+	for way_id, refs in parts:
+		# Closed, however few its nodes: a ring simplified down to a point or
+		# two (by an older summary) is a ring too small to see, not a chain
+		if len(refs) >= 2 and refs[0] == refs[-1]:
+			rings.append((list(refs), [way_id]))
+		elif len(refs) >= 2:
+			open_.append((way_id, list(refs)))
+	by_end = {}
+	for i, (_, refs) in enumerate(open_):
+		by_end.setdefault(refs[0], []).append(i)
+		by_end.setdefault(refs[-1], []).append(i)
+	used = [False] * len(open_)
+	leftovers = []
+	for start in range(len(open_)):
+		if used[start]:
+			continue
+		used[start] = True
+		ids, refs = [open_[start][0]], list(open_[start][1])
+		# Along the chain from its end until it comes back to its start (each
+		# node of a ring ends two of its ways)
+		while refs[0] != refs[-1]:
+			end = refs[-1]
+			following = next((i for i in by_end.get(end, []) if not used[i]), None)
+			if following is None:
+				break
+			used[following] = True
+			other = open_[following][1]
+			refs.extend(other[1:] if other[0] == end else list(reversed(other[:-1])))
+			ids.append(open_[following][0])
+		if refs[0] == refs[-1]:
+			rings.append((refs, ids))
+		else:
+			leftovers.extend(ids)
+	return rings, leftovers
+
+
 def summarize(data, level, tile=None):
 	"""The objects of data worth keeping at a level, with simplified geometry.
-	For a tile (x, y), lines that never come within LINE_MARGIN of it are
-	left out: a line is only drawn where it is, and the tiles it does reach
-	keep it whole. Areas are kept, as one can cover the tile without its
-	outline reaching it: closed ways, and the members of multipolygons."""
+
+	A multipolygon drawn as an area is kept as its rings: its member ways are
+	joined into rings, each simplified whole, and rings too small to see at
+	the level (MIN_RING_PIXELS), or, for a tile (x, y), that don't reach it,
+	are left out. Simplified way by way, a ring joined from many short ways
+	(a woodland of thousands of woods, say) keeps both ends of every one of
+	them, at any level. Ways a chain can't be closed from are kept as they are.
+
+	For a tile, lines that never come within LINE_MARGIN of it are left out
+	too: a line is only drawn where it is, and the tiles it does reach keep it
+	whole. Closed ways are kept, as an area can cover the tile without its
+	outline reaching it."""
 	keep = summary_filter()
 	tol = tolerance(level)
 	coords = {node.id: (node.lon, _latp(node.lat)) for node in data.nodes}
 	reach = _reach(level, *tile) if tile is not None else None
+	pixel = 360.0 / (1 << level) / 4096
+	source = {way.id: way for way in data.ways}
 
 	relations = []
 	for relation in data.relations:
@@ -161,22 +232,55 @@ def summarize(data, level, tile=None):
 		if tags is not None:
 			relations.append((relation, tags))
 	relation_ids = {relation.id for relation, _ in relations}
-	member_ways = {m.ref for relation, _ in relations for m in relation.members if m.type == "way"}
-	area_members = {m.ref for relation, _ in relations if relation.tags.get("type") == "multipolygon"
+	areas = {relation.id for relation, _ in relations if relation.tags.get("type") == "multipolygon"}
+	# The member ways of the other relations (boundaries, routes): kept as
+	# they are
+	member_ways = {m.ref for relation, _ in relations if relation.id not in areas
 		for m in relation.members if m.type == "way"}
 
 	ways = {}
+	area_members = {}  # an area's members, its rings in place of the ways joined into them
+	unjoined = set()  # the member ways of areas that couldn't be joined into rings
+	for relation, _ in relations:
+		if relation.id not in areas:
+			continue
+		members = []
+		for inner in (False, True):
+			parts = [(m.ref, [ref for ref in source[m.ref].refs if ref in coords]) for m in relation.members
+				if m.type == "way" and m.ref in source and (m.role == "inner") == inner]
+			role = "inner" if inner else "outer"
+			rings, leftovers = _join_rings(parts)
+			for refs, ids in rings:
+				xs = [coords[ref][0] for ref in refs]
+				ys = [coords[ref][1] for ref in refs]
+				if max(max(xs) - min(xs), max(ys) - min(ys)) < MIN_RING_PIXELS * pixel:
+					continue
+				if reach is not None and not reach.intersects(box(min(xs), min(ys), max(xs), max(ys))):
+					continue
+				refs = simplify_refs(refs, coords, tol)
+				if len(refs) < 4 or refs[0] != refs[-1]:
+					continue
+				ring_id = ids[0] if len(ids) == 1 else _ring_id(relation.id, min(ids))
+				ways[ring_id] = pyo5m.Way(ring_id, refs, {})
+				members.append(pyo5m.Member("way", ring_id, role))
+			roles = {m.ref: m.role for m in relation.members if m.type == "way"}
+			members.extend(pyo5m.Member("way", way_id, roles[way_id]) for way_id in leftovers)
+			unjoined.update(leftovers)
+		members.extend(m for m in relation.members if m.type != "way")
+		area_members[relation.id] = members
+
 	for way in data.ways:
 		closed = len(way.refs) > 3 and way.refs[0] == way.refs[-1]
 		tags = keep("way", way.tags, level, closed)
-		if tags is None and way.id not in member_ways:
+		needed = way.id in member_ways or way.id in unjoined
+		if tags is None and not needed:
 			continue
 		refs = simplify_refs(way.refs, coords, tol)
 		# An area simplified away is too small to show, unless a relation
 		# needs it
-		if len(refs) < 2 or (closed and len(refs) < 4 and way.id not in member_ways):
+		if len(refs) < 2 or (closed and len(refs) < 4 and not needed):
 			continue
-		if (reach is not None and not closed and way.id not in area_members
+		if (reach is not None and not closed and way.id not in unjoined
 				and not reach.intersects(LineString([coords[ref] for ref in refs]))):
 			continue
 		ways[way.id] = pyo5m.Way(way.id, refs, tags or {})
@@ -184,7 +288,7 @@ def summarize(data, level, tile=None):
 	out = pyo5m.OsmData()
 	needed_nodes = {ref for way in ways.values() for ref in way.refs}
 	for relation, tags in relations:
-		members = [m for m in relation.members
+		members = [m for m in area_members.get(relation.id, relation.members)
 			if (m.type == "way" and m.ref in ways)
 			or (m.type == "node" and m.ref in coords)
 			or (m.type == "relation" and m.ref in relation_ids)]

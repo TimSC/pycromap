@@ -40,6 +40,17 @@ class FilterTests(TestCase):
 		self.assertIsNone(keep("way", {"natural": "water"}, 10, False))
 		self.assertIsNotNone(keep("relation", {"type": "multipolygon", "landuse": "forest"}, 6))
 
+	def test_every_summary_level_has_rules(self):
+		# A level in TILE_ZOOMS without entries in summary.lua's tables would
+		# fail on every summary built at it
+		keep = summary_filter()
+		for level in build.levels():
+			keep("way", {"highway": "motorway"}, level, False)
+			keep("way", {"waterway": "river"}, level, False)
+			keep("way", {"boundary": "administrative", "admin_level": "2"}, level, False)
+			keep("node", {"place": "country", "name": "X"}, level)
+			keep("relation", {"type": "boundary", "boundary": "administrative", "admin_level": "2"}, level)
+
 	def test_coastlines_are_not_kept(self):
 		# The sea is drawn from the coastline shapefile, so OSM's coastline
 		# ways, open or closed, are left out
@@ -118,6 +129,62 @@ class SummarizeTests(TestCase):
 		self.assertEqual([m.ref for m in next(r for r in out.relations if r.id == 20).members], [10])
 		# Without a tile, nothing is left out
 		self.assertEqual([w.id for w in build.summarize(data, 12).ways], [10, 11, 12, 13, 14])
+
+	def ring_data(self, size=0.01, split=True, extra_ways=(), extra_relations=(), lat=50.0, lon=-1.0):
+		"""A wood multipolygon whose outer ring is a square of size degrees,
+		joined from three member ways (or one closed way)."""
+		nodes = [pyo5m.Node(1, lat, lon), pyo5m.Node(2, lat, lon + size), pyo5m.Node(3, lat + size, lon + size),
+			pyo5m.Node(4, lat + size, lon)]
+		if split:
+			ways = [pyo5m.Way(10, [1, 2], {}), pyo5m.Way(11, [3, 2], {}), pyo5m.Way(12, [3, 4, 1], {})]
+		else:
+			ways = [pyo5m.Way(10, [1, 2, 3, 4, 1], {})]
+		wood = pyo5m.Relation(20, [pyo5m.Member("way", w.id, "outer") for w in ways],
+			{"type": "multipolygon", "natural": "wood"})
+		return osm(nodes=nodes, ways=ways + list(extra_ways), relations=[wood] + list(extra_relations))
+
+	def test_a_multipolygon_is_kept_as_its_rings(self):
+		out = build.summarize(self.ring_data(), 12)
+		ring = build._ring_id(20, 10)
+		self.assertGreaterEqual(ring, build.RING_ID_BASE)
+		self.assertEqual([w.id for w in out.ways], [ring])  # the three member ways joined
+		self.assertEqual(out.ways[0].refs[0], out.ways[0].refs[-1])
+		self.assertEqual([(m.ref, m.role) for m in out.relations[0].members], [(ring, "outer")])
+		# The same ID in another summary of the same relation, so merging keeps one
+		again = build.summarize(self.ring_data(), 12)
+		self.assertEqual(len(build.merge([(out, 1), (again, 1)]).ways), 1)
+
+	def test_a_closed_member_way_keeps_its_id(self):
+		out = build.summarize(self.ring_data(split=False), 12)
+		self.assertEqual([w.id for w in out.ways], [10])
+
+	def test_rings_too_small_to_see_are_left_out(self):
+		# Under MIN_RING_PIXELS at level 6: the relation goes with it
+		small = build.MIN_RING_PIXELS * 360.0 / (1 << 6) / 4096 / 2
+		out = build.summarize(self.ring_data(size=small), 6)
+		self.assertEqual((out.ways, out.relations), ([], []))
+		self.assertEqual(len(build.summarize(self.ring_data(size=small * 4), 6).relations), 1)
+
+	def test_rings_not_reaching_the_tile_are_left_out(self):
+		west, south, east, north = tile_bounds(12, 2030, 1360)
+		inside = self.ring_data(size=(east - west) / 4, lat=south + (north - south) / 4, lon=west + (east - west) / 4)
+		far = self.ring_data(size=(east - west) / 4, lat=south, lon=east + 3 * (east - west))
+		self.assertEqual(len(build.summarize(inside, 12, (2030, 1360)).relations), 1)
+		self.assertEqual(build.summarize(far, 12, (2030, 1360)).relations, [])
+
+	def test_a_chain_that_cant_be_closed_keeps_its_ways(self):
+		data = self.ring_data()
+		data.ways = [w for w in data.ways if w.id != 12]  # a member missing
+		data.ways.append(pyo5m.Way(12, [3, 4], {}))  # ends short of the start
+		out = build.summarize(data, 12)
+		self.assertEqual(sorted(w.id for w in out.ways), [10, 11, 12])
+
+	def test_a_way_another_relation_needs_is_kept(self):
+		border = pyo5m.Relation(30, [pyo5m.Member("way", 10, "outer")],
+			{"type": "boundary", "boundary": "administrative", "admin_level": "2"})
+		out = build.summarize(self.ring_data(extra_relations=[border]), 12)
+		self.assertIn(10, [w.id for w in out.ways])
+		self.assertEqual(len(out.relations), 2)
 
 	def test_encodes_and_decodes(self):
 		data = osm(nodes=[pyo5m.Node(5, 50.05, -0.96, {"place": "town"})])

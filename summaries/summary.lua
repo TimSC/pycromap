@@ -18,6 +18,8 @@ local function set(list)
 	return s
 end
 
+-- Each table below has an entry for every summary level (TILE_ZOOMS)
+
 -- The least important roads kept at each level
 local roads = {
 	[12] = set { "motorway", "trunk", "primary", "secondary", "tertiary",
@@ -26,6 +28,8 @@ local roads = {
 		"motorway_link", "trunk_link", "primary_link", "secondary_link" },
 	[8] = set { "motorway", "trunk", "primary" },
 	[6] = set { "motorway", "trunk" },
+	[4] = set { "motorway" },
+	[2] = set {},
 }
 
 local places = {
@@ -34,10 +38,12 @@ local places = {
 	[10] = set { "continent", "country", "state", "province", "city", "town", "village" },
 	[8] = set { "continent", "country", "state", "province", "city", "town" },
 	[6] = set { "continent", "country", "state", "province", "city" },
+	[4] = set { "continent", "country", "state" },
+	[2] = set { "continent", "country" },
 }
 
 -- The lowest admin_level kept at each level
-local admin_levels = { [12] = 8, [10] = 6, [8] = 4, [6] = 4 }
+local admin_levels = { [12] = 8, [10] = 6, [8] = 4, [6] = 4, [4] = 4, [2] = 2 }
 
 local landuse = set { "residential", "commercial", "industrial", "retail", "railway",
 	"cemetery", "military", "quarry", "forest", "farmland", "meadow", "grass",
@@ -46,7 +52,7 @@ local natural = set { "water", "wood", "scrub", "grassland", "heath", "wetland",
 	"beach", "sand", "bare_rock", "scree", "bay" }
 local leisure = set { "park", "nature_reserve", "golf_course", "garden" }
 local waterways = { [12] = set { "river", "canal" }, [10] = set { "river", "canal" },
-	[8] = set { "river" }, [6] = set { "river" } }
+	[8] = set { "river" }, [6] = set { "river" }, [4] = set { "river" }, [2] = set {} }
 
 -- Tags tilemaker's profile reads for what a summary keeps
 local kept_keys = set { "highway", "railway", "service", "waterway", "natural", "water",
