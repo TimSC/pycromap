@@ -11,6 +11,7 @@
         #map { position:absolute; top:0; bottom:0; width:100%; }
 		#refresh { position: absolute; top: 15px; left: 15px; background-color: white; padding: 5px;
 			border: 1px solid black; font-family: Avenir; cursor: pointer; }
+		.projection-control select { border: 0; background: transparent; padding: 4px; font: inherit; cursor: pointer; }
     </style>
 </head>
 <body>
@@ -30,6 +31,80 @@ function getJson(url) {
 	return fetch(url).then(response => response.json());
 }
 
+// The languages labels are shown in, from the address: ?lang= for the main
+// label and ?lang2= for the line beneath it (or beside it, for roads and
+// waters), each a language code ("de", "zh-Hans") or "local" (the object's
+// own name tag). By default the local name, with English beneath. The tiles
+// carry each language as name:xx, where it differs from the local name, so a
+// main label falls back to the local name, and a second label that is missing,
+// or says the same as the main one, is left out.
+var LANGUAGE = /^([a-z]{2,3}([-_][A-Za-z0-9]+)*|local)$/;
+
+function language(param, fallback) {
+	var asked = new URLSearchParams(window.location.search).get(param);
+	return asked && LANGUAGE.test(asked) ? asked : fallback;
+}
+
+function nameIn(lang) {
+	return lang === 'local' ? ['get', 'name:latin'] : ['get', 'name:' + lang];
+}
+
+// The style's labels ("{name:latin}", "{name:latin}\n{name:en}" and
+// "{name:latin} {name:en}") in the languages asked for
+function setLanguages(style, lang, lang2) {
+	var main = lang === 'local' ? ['coalesce', ['get', 'name:latin'], ''] :
+		['coalesce', nameIn(lang), ['get', 'name:latin'], ''];
+	var second = ['coalesce', nameIn(lang2), ''];
+	function withSecond(separator) {
+		return ['case', ['any', ['==', second, ''], ['==', second, main]], main,
+			['concat', main, separator, second]];
+	}
+	var labels = { '{name:latin}': main, '{name:latin}\n{name:en}': withSecond('\n'),
+		'{name:latin} {name:en}': withSecond(' ') };
+	for (var layer of style.layers) {
+		var field = layer.layout && layer.layout['text-field'];
+		if (typeof field === 'string' && field in labels) {
+			layer.layout['text-field'] = labels[field];
+		}
+	}
+}
+
+// The projections the map can be drawn in, and their names in the menu
+var PROJECTIONS = { 'mercator': 'Flat', 'globe': 'Globe', 'vertical-perspective': 'Vertical perspective' };
+
+// A menu of the projections: choosing one redraws the map in it, from the
+// tiles it has, and puts it in the address (?projection=), so a link or a
+// reload keeps it. Given the projection the map starts in, as the map has
+// none to give until its style has loaded
+class ProjectionControl {
+	constructor(type) {
+		this.type = type;
+	}
+
+	onAdd(map) {
+		this.container = document.createElement('div');
+		this.container.className = 'maplibregl-ctrl maplibregl-ctrl-group projection-control';
+		var select = document.createElement('select');
+		select.title = 'Projection';
+		for (var [type, name] of Object.entries(PROJECTIONS)) {
+			select.add(new Option(name, type));
+		}
+		select.value = this.type;
+		select.addEventListener('change', () => {
+			map.setProjection({ type: select.value });
+			var url = new URL(window.location.href);
+			url.searchParams.set('projection', select.value);
+			history.replaceState(null, '', url);
+		});
+		this.container.appendChild(select);
+		return this.container;
+	}
+
+	onRemove() {
+		this.container.remove();
+	}
+}
+
 Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")])
 	.then(([data, style, spec]) => {
 		// The tile source inline, rather than by its url, so its tile URLs can be resolved too
@@ -39,13 +114,13 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 			style.sources.openmaptiles = Object.assign({ type: source.type }, spec);
 		}
 		style.glyphs = fromThisServer(style.glyphs);
-		// The tiles drawn on a globe, which flattens into the usual map as it
-		// zooms in, unless the address asks for another projection
-		// (?projection=mercator for the flat map, or vertical-perspective);
-		// the globe button switches between the globe and the flat map
-		var projections = ['globe', 'mercator', 'vertical-perspective'];
+		setLanguages(style, language('lang', 'local'), language('lang2', 'en'));
+		// The tiles drawn on the usual flat map (Mercator), unless the address
+		// asks for another projection (?projection=globe, which flattens into
+		// the flat map as it zooms in, or vertical-perspective); the projection
+		// menu switches between them
 		var asked = new URLSearchParams(window.location.search).get('projection');
-		style.projection = { type: projections.includes(asked) ? asked : 'globe' };
+		style.projection = { type: Object.hasOwn(PROJECTIONS, asked) ? asked : 'mercator' };
 
 		var bounds = data['bounds'].split(',');
 		map = new maplibregl.Map({
@@ -60,7 +135,7 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		    hash: true
 		});
 		map.addControl(new maplibregl.NavigationControl());
-		map.addControl(new maplibregl.GlobeControl());
+		map.addControl(new ProjectionControl(style.projection.type));
 		map.addControl(new maplibregl.AttributionControl({ compact: false, customAttribution:
 			"Style © <a href='http://openmaptiles.org/'>OpenMapTiles</a> | "+
 			"Data © <a href='http://www.openstreetmap.org/copyright'>OpenStreetMap contributors</a> | "+
