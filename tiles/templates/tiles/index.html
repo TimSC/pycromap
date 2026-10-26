@@ -69,6 +69,30 @@ function setLanguages(style, lang, lang2) {
 	}
 }
 
+// UK public rights of way (footpaths, bridleways and byways, from their
+// designation tag), drawn in colours of their own: only if the address asks
+// (?prow=1). Otherwise they are drawn as the paths and tracks they are: the
+// style's own layers for them go, and the condition keeping them out of the
+// usual path and road layers with it.
+var ROW_LAYER_PREFIX = 'highway-designation-';
+var NOT_DESIGNATED = JSON.stringify(['!has', 'designation']);
+
+function wanted(param) {
+	return ['1', 'true', 'on', 'yes'].includes(new URLSearchParams(window.location.search).get(param));
+}
+
+function setRightsOfWay(style, shown) {
+	if (shown) {
+		return;
+	}
+	style.layers = style.layers.filter(layer => !layer.id.startsWith(ROW_LAYER_PREFIX));
+	for (var layer of style.layers) {
+		if (Array.isArray(layer.filter) && layer.filter[0] === 'all') {
+			layer.filter = layer.filter.filter(part => JSON.stringify(part) !== NOT_DESIGNATED);
+		}
+	}
+}
+
 // The projections the map can be drawn in, and their names in the menu
 var PROJECTIONS = { 'mercator': 'Flat', 'globe': 'Globe', 'vertical-perspective': 'Vertical perspective' };
 
@@ -115,6 +139,7 @@ Promise.all([getJson("/metadata"), getJson("/style.json"), getJson("/spec.json")
 		}
 		style.glyphs = fromThisServer(style.glyphs);
 		setLanguages(style, language('lang', 'local'), language('lang2', 'en'));
+		setRightsOfWay(style, wanted('prow'));
 		// The tiles drawn on the usual flat map (Mercator), unless the address
 		// asks for another projection (?projection=globe, which flattens into
 		// the flat map as it zooms in, or vertical-perspective); the projection
