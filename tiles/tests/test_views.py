@@ -17,7 +17,8 @@ class TileViewTests(TransactionTestCase):
 	def setUp(self):
 		self.cache = tempfile.TemporaryDirectory()
 		self.settings = override_settings(TILE_CACHE_DIR=Path(self.cache.name), TILE_CACHE_URL="/tilecache/",
-			TILE_ZOOMS={13: {"source": "data", "cache": False}, 12: {"source": "data", "cache": True, "max_age": 3600}},
+			TILE_ZOOMS={13: {"source": "data", "cache": False},
+				12: {"source": "data", "cache": True, "max_age": 3600, "check_edits": True}},
 			TILE_REQUEST_WAIT=5, EDIT_CHECK_INTERVAL=0)
 		self.settings.enable()
 		# Whether the map has been edited: it hasn't, unless a test says so
@@ -135,11 +136,12 @@ class TileViewTests(TransactionTestCase):
 		tile.refresh_from_db()
 		self.assertIsNone(tile.edits_checked_at)
 
-	def test_checking_edits_can_be_turned_off(self):
+	def test_edits_are_not_checked_unless_turned_on(self):
 		self.cached()
 		self.changed_since.return_value = True
-		with override_settings(TILE_ZOOMS={12: {"source": "data", "cache": True, "check_edits": False}}):
-			self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
+		for config in ({"source": "data", "cache": True}, {"source": "data", "cache": True, "check_edits": False}):
+			with override_settings(TILE_ZOOMS={12: config}):
+				self.assertEqual(self.client.get("/tiles/12/1/2.pbf").status_code, 302)
 		self.changed_since.assert_not_called()
 
 	def test_tiles_made_from_summaries_are_not_checked(self):

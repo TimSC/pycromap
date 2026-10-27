@@ -111,8 +111,8 @@ def _needs_rendering(existing, config):
 	always; a cached zoom's if it hasn't been, its file is gone, it was
 	rendered while the zoom wasn't cached (its data is in the database, not a
 	file), it is older than the zoom's max_age (seconds), or, for one made
-	from the map data, the map in its area has been edited since (unless the
-	zoom's check_edits is False)."""
+	from the map data, the map in its area has been edited since (only if the
+	zoom's check_edits is True)."""
 	if not config.get("cache", False):
 		return True
 	if existing is None:
@@ -124,7 +124,7 @@ def _needs_rendering(existing, config):
 	max_age = config.get("max_age")
 	if max_age and (timezone.now() - existing.rendered_at).total_seconds() > max_age:
 		return True
-	if config["source"] == "data" and config.get("check_edits", True):
+	if config["source"] == "data" and config.get("check_edits", False):
 		return _edited_since(existing)
 	return False
 

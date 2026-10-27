@@ -218,7 +218,8 @@ TILEMAKER = {
 #              again when asked for (none: kept until it is gone)
 #   "check_edits": for a cached zoom made from the map data, whether a tile
 #              is rendered again when asked for once the map in its area has
-#              been edited since (see mapdata/changes.py); True unless set.
+#              been edited since (see mapdata/changes.py); False unless set,
+#              as each check is a query of the map database.
 #              Zooms made from summaries aren't checked: rendering them again
 #              would only use the same summaries.
 #   "idle_tile_gen": for a cached zoom, whether idle renderers render its
