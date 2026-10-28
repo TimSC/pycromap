@@ -818,7 +818,7 @@ function attribute_function(attr,layer)
 		return { subclass="ice_shelf" }
 	elseif attr["featurecla"]=="Urban area" then
 		return { class="residential" }
-	elseif layer=="ocean" then
+	elseif layer=="ocean" or layer=="ocean_low" or layer=="ocean_mid" then
 		return { class="ocean" }
 	else
 		return attr

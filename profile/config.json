@@ -17,7 +17,9 @@
 		"building":          { "minzoom": 12, "maxzoom": 14 },
 
 		"water":             { "minzoom": 6,  "maxzoom": 14, "simplify_below": 12, "simplify_level": 0.0003, "simplify_algorithm": "visvalingam" },
-		"ocean":             { "minzoom": 0,  "maxzoom": 14, "source": "coastline/water_polygons.shp", "filter_below": 12, "filter_area": 0.5, "simplify_below": 12, "simplify_level": 0.0001, "simplify_algorithm": "visvalingam", "write_to": "water" },
+		"ocean_low":         { "minzoom": 0,  "maxzoom": 4,  "source": "landcover/ne_50m_ocean/ne_50m_ocean.shp", "simplify_below": 5, "simplify_level": 0.0003, "simplify_algorithm": "visvalingam", "write_to": "water" },
+		"ocean_mid":         { "minzoom": 5,  "maxzoom": 5,  "source": "landcover/ne_10m_ocean/ne_10m_ocean.shp", "simplify_below": 6, "simplify_level": 0.0003, "simplify_algorithm": "visvalingam", "write_to": "water" },
+		"ocean":             { "minzoom": 6,  "maxzoom": 14, "source": "coastline/water_polygons.shp", "filter_below": 12, "filter_area": 0.5, "simplify_below": 12, "simplify_level": 0.0001, "simplify_algorithm": "visvalingam", "write_to": "water" },
 		"water_name":        { "minzoom": 12, "maxzoom": 14 },
 		"water_name_detail": { "minzoom": 12, "maxzoom": 14, "write_to": "water_name" },
 
