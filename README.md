@@ -104,6 +104,11 @@ The pycrocosm database's details come from `.env`, as without Docker, but the co
 
 The web server is uvicorn, with `WEB_WORKERS` processes (16), each of which can have many tile requests waiting for the renderer at once; a request is cancelled when its client goes away. A request waits up to `TILE_REQUEST_WAIT` seconds (600); uvicorn sets no time limit of its own.
 
+
+## Exporting to PMTiles
+
+`manage.py export_mbtiles map.mbtiles` writes the tiles rendered so far to one MBTiles file (`--zooms 0-8` for only some zooms, `--force` to replace the file), which [go-pmtiles](https://github.com/protomaps/go-pmtiles) makes a PMTiles archive of: `pmtiles convert map.mbtiles map.pmtiles`. Tiles sharing a common file take the space of one in the archive. An archive is a snapshot: tiles not rendered yet aren't in it, and edits since aren't either. The file's `vector_layers` name the profile's layers, but not their fields.
+
 ## Tests
 
     venv/bin/python manage.py test

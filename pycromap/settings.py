@@ -231,10 +231,10 @@ TILEMAKER = {
 # scales its tiles up (VIEWER_MAX_ZOOM): the profile gives z12 the content of
 # upstream's z14 (see profile/process.lua).
 TILE_ZOOMS = {
-	12: {"source": "data", "cache": True, "summary": True},
-	11: {"source": "summary", "level": 12, "cache": True},
-	10: {"source": "summary", "level": 12, "cache": True, "summary": True},
-	9: {"source": "summary", "level": 10, "cache": True},
+	12: {"source": "data", "cache": True, "summary": True, "idle_tile_gen": True},
+	11: {"source": "summary", "level": 12, "cache": True, "idle_tile_gen": True},
+	10: {"source": "summary", "level": 12, "cache": True, "summary": True, "idle_tile_gen": True},
+	9: {"source": "summary", "level": 10, "cache": True, "idle_tile_gen": True},
 	8: {"source": "summary", "level": 10, "cache": True, "summary": True, "idle_tile_gen": True},
 	7: {"source": "summary", "level": 8, "cache": True, "idle_tile_gen": True},
 	6: {"source": "summary", "level": 8, "cache": True, "summary": True, "idle_tile_gen": True},
